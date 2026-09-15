@@ -2,6 +2,16 @@
   "name": "dsh-qboson-ising-solver",
   "version": "1.0.0",
   "description": "QBoson Kaiwu/SPQC Ising Matrix solver plugin for DeepSeek Harness",
+  "repository": {
+      "type": "git",
+      "url": "git+https://github.com/DYF-zs/dsh-qboson-ising-solver.git"
+  },
+  "homepage": "https://github.com/DYF-zs/dsh-qboson-ising-solver#readme",
+  "bugs": {
+    "url": "https://github.com/DYF-zs/dsh-qboson-ising-solver/issues"
+  },
+
+
   "type": "module",
   "main": "./src/index.js",
   "types": "./types/index.d.ts",
@@ -33,7 +43,7 @@
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "test:python": "python -m unittest discover -s python/tests -p 'test_*.py'",
+    "test:python": "python -m unittest discover -s python/tests -p \"test_*.py\"",
     "check": "npm test && npm run test:python",
     "doctor": "node ./bin/dsh-ising-doctor.js"
   },

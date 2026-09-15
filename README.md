@@ -29,6 +29,12 @@ Kaiwu SDK -> CIMOptimizer -> QBoson SPQC
 
 ## 安装
 
+**npm 安装**
+
+```bash
+dsh plugin --profile web add dsh-qboson-ising-solver
+```
+
 **GitHub 直接安装**
 
 ```bash
