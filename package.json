@@ -1,6 +1,6 @@
 {
   "name": "dsh-qboson-ising-solver",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "QBoson Kaiwu/SPQC Ising Matrix solver plugin for DeepSeek Harness",
   "repository": {
       "type": "git",

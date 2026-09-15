@@ -76,10 +76,10 @@ refs:
 
 ## 启动
 
-在 DeepSeek Harness 源码仓库根目录运行：
+安装插件后，启动 DeepSeek Harness：
 
 ```powershell
-pnpm dsh web
+dsh web
 ```
 
 首次调用 `solve_ising` 时，插件会自动完成：
@@ -240,5 +240,6 @@ node C:\Users\<Windows 用户名>\Desktop\dsh-qboson-ising-solver\bin\dsh-ising-
 
 从 `web` profile 中移除 QBoson Ising Solver：
 
-```bash
+```powershell
 dsh plugin --profile web remove dsh-qboson-ising-solver
+```
