@@ -1,0 +1,64 @@
+{
+  "name": "dsh-qboson-ising-solver",
+  "version": "1.0.0",
+  "description": "QBoson Kaiwu/SPQC Ising Matrix solver plugin for DeepSeek Harness",
+  "type": "module",
+  "main": "./src/index.js",
+  "types": "./types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./provider-kaiwu": "./src/provider-kaiwu.js",
+    "./tool": "./src/tool.js",
+    "./service": "./src/service.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./runtime-manager": "./src/runtime-manager.js"
+  },
+  "files": [
+    "src",
+    "types",
+    "python/qboson_ising_worker/*.py",
+    "bin",
+    "docs",
+    "examples",
+    "cordis.patch.yml",
+    "README.md",
+    "pyproject.toml"
+  ],
+  "bin": {
+    "dsh-ising-doctor": "./bin/dsh-ising-doctor.js"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "test:python": "python -m unittest discover -s python/tests -p 'test_*.py'",
+    "check": "npm test && npm run test:python",
+    "doctor": "node ./bin/dsh-ising-doctor.js"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.0",
+    "@deepseek-ai/dsh-subprocess": "^0.1.0-0",
+    "@deepseek-ai/dsh-tools": "^0.1.0-0",
+    "@deepseek-ai/dsh-credentials": "^0.1.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "ising",
+    "qboson",
+    "kaiwu",
+    "spqc",
+    "optimization"
+  ],
+  "license": "UNLICENSED"
+}

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qboson-ising-worker"
+version = "1.0.0"
+description = "Python worker for the QBoson Ising Solver DeepSeek Harness plugin"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+  "kaiwu",
+]
+
+[project.scripts]
+qboson-ising-worker = "qboson_ising_worker.worker:main"
+
+[tool.setuptools]
+package-dir = {"" = "python"}
+
+[tool.setuptools.packages.find]
+where = ["python"]
+include = ["qboson_ising_worker*"]
