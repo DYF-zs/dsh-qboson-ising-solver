@@ -51,6 +51,14 @@ dsh plugin --profile web add "link:$PWD"
 
 ## 配置 QBoson 凭据
 
+使用本插件前，需要准备 QBoson 用户 ID 和 SDK Code。
+
+1. 登录或注册 [玻色量子 Ising® 专用量子计算云平台](https://platform.qboson.com/)。
+2. 进入 [SDK 下载页面](https://platform.qboson.com/sdkDownload)。
+3. 在页面中获取你的：
+   - `QBOSON_USER_ID`
+   - `QBOSON_SDK_CODE`
+
 在 Windows 中，将 QBoson 凭据写入下面这个文件：
 
 ```text
