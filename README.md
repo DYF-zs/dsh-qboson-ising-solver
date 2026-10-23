@@ -24,7 +24,7 @@ dsh plugin --profile web add "link:$PWD"
 
 ```powershell
 dsh plugin --profile web add github:DYF-zs/dsh-qboson-ising-solver
-# npm 发布后使用：
+
 dsh plugin --profile web add dsh-qboson-ising-solver
 ```
 
