@@ -16,6 +16,13 @@ export interface IsingSolveResult {
   task_name: string
 }
 
+export interface KaiwuRuntimeInfo {
+  python_executable: string
+  python_version: string
+  kaiwu_version: string
+  runtime_dir: string
+}
+
 export class IsingSolverError extends Error {
   readonly code: string
   readonly details?: unknown
@@ -24,6 +31,8 @@ export class IsingSolverError extends Error {
 
 export class IsingSolverService extends Service {
   constructor(ctx: Context)
+  /** Optional environment capability supplied by the Kaiwu provider. */
+  prepareRuntime?(signal?: AbortSignal): Promise<KaiwuRuntimeInfo>
   solve(request: IsingSolveRequest, signal?: AbortSignal): Promise<IsingSolveResult>
 }
 

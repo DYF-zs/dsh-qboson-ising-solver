@@ -115,6 +115,22 @@ export default class KaiwuIsingSolverProvider extends IsingSolverService {
     return this.client
   }
 
+  async prepareRuntime(signal) {
+    const python = await this.runtime.resolvePython(signal)
+    const script = [
+      'import sys,json',
+      'from importlib.metadata import version',
+      'print(json.dumps({"python_executable":sys.executable,"python_version":sys.version.split()[0],"kaiwu_version":version("kaiwu")}))',
+    ].join('; ')
+    const stdout = await this.runtime.runChecked([python, '-c', script], {
+      env: { PYTHONUTF8: '1' }, signal, code: 'PYTHON_RUNTIME_INVALID',
+    })
+    return {
+      ...JSON.parse(stdout),
+      runtime_dir: this.runtime.root,
+    }
+  }
+
   async solve(request, signal) {
     const dimension = validateIsingMatrix(request?.isingMatrix)
     const [env, client] = await Promise.all([

@@ -1,5 +1,7 @@
 - insert:
     - id: qboson-ising-provider-kaiwu
       name: 'dsh-qboson-ising-solver/provider-kaiwu'
-    - id: qboson-ising-tool
+    - id: qboson-ising-tools
       name: 'dsh-qboson-ising-solver/tool'
+    - id: qboson-kaiwu-skill
+      name: 'dsh-qboson-ising-solver/skills'

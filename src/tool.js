@@ -1,6 +1,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { registerFileTool, registerRuntimeTool } from './execution-tools.js'
 
-export const name = 'qboson-ising-tool'
+export const name = 'qboson-ising-tools'
 export const inject = ['tools', 'isingSolver']
 
 export function apply(ctx) {
@@ -56,4 +57,7 @@ export function apply(ctx) {
       return ctx.isingSolver.solve({ isingMatrix: args.ising_matrix }, exec.signal)
     },
   }))
+
+  if (typeof ctx.isingSolver.prepareRuntime === 'function') registerRuntimeTool(ctx)
+  ctx.inject(['fs'], registerFileTool)
 }

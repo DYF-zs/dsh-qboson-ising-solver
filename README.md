@@ -1,253 +1,149 @@
 # QBoson Ising Solver for DeepSeek Harness
 
-`dsh-qboson-ising-solver` 为 DeepSeek Harness 提供 `solve_ising` Tool，使用 Kaiwu SDK 的 `CIMOptimizer` 将已完成建模的 Ising Matrix 提交到 QBoson SPQC，并返回 spin solutions、Hamiltonian、求解耗时与任务标识。
+`dsh-qboson-ising-solver` 是面向 DeepSeek Harness 的玻色量子（QBoson）组合优化插件，基于开物（Kaiwu）SDK，让 AI 智能体能够根据业务需求构建 QUBO / Ising 模型，调用 QBoson SPQC 真机求解，并还原、验证和保存业务结果。
 
-输入契约为已完成建模、可直接求解的完整 `N × N` 数值 Ising Matrix。问题建模由调用侧完成，求解规模遵循 Kaiwu SDK、License、Project 与 SPQC 的能力约束。
-
-## 工作方式
-
-```text
-Agent / LLM
-    |
-    v
-solve_ising Tool
-    |
-    v
-ctx.isingSolver
-    ^
-    |
-Kaiwu Solver Provider
-    |
-    v
-Managed Python 3.10 Runtime
-    |
-    v
-Kaiwu SDK -> CIMOptimizer -> QBoson SPQC
-```
-
-插件在 `$DSH_HOME/runtimes/dsh-qboson-ising-solver` 维护独立的 Python 3.10 运行时。首次求解时自动准备运行时并安装 `kaiwu`，后续启动直接复用。
+- **业务问题建模**：根据业务目标、数据和约束，生成并运行 Kaiwu 建模代码，支持选址、调度、路径规划、覆盖等组合优化问题。
+- **真机求解**：调用 QBoson SPQC 真机，支持直接输入 Ising Matrix 或从 JSON 文件读取矩阵，返回候选自旋解、Hamiltonian 和求解耗时。
+- **结果验证**：将自旋解还原为业务方案，检查原始约束、计算业务目标值，并从返回的候选中筛选最佳可行方案。
+- **结果保存**：保存建模代码、矩阵、变量映射、原始求解结果和业务方案，记录任务标识，便于复查、追溯与复现。
 
 ## 安装
 
-**npm 安装**
+插件版本 `0.2.0`，支持 DSH `0.2.1-rc.2`，适用于本地网页版和桌面版。
 
-```bash
-dsh plugin --profile web add dsh-qboson-ising-solver
-```
+**从源码安装到网页版**
 
-**GitHub 直接安装**
-
-```bash
-dsh plugin --profile web add github:DYF-zs/dsh-qboson-ising-solver
-```
-
-**Git Clone + 本地安装**
-
-```bash
+```powershell
 git clone https://github.com/DYF-zs/dsh-qboson-ising-solver.git
 cd dsh-qboson-ising-solver
+npm install
 dsh plugin --profile web add "link:$PWD"
 ```
 
-## 配置 QBoson 凭据
+也可通过 GitHub 或 npm 安装相应来源中已发布的版本：
 
-使用本插件前，需要准备 QBoson 用户 ID 和 SDK Code。
+```powershell
+dsh plugin --profile web add github:DYF-zs/dsh-qboson-ising-solver
+# npm 发布后使用：
+dsh plugin --profile web add dsh-qboson-ising-solver
+```
 
-1. 登录或注册 [玻色量子 Ising® 专用量子计算云平台](https://platform.qboson.com/)。
-2. 进入 [SDK 下载页面](https://platform.qboson.com/sdkDownload)。
-3. 在页面中获取你的：
-   - `QBOSON_USER_ID`
-   - `QBOSON_SDK_CODE`
+**桌面版安装**
 
-在 Windows 中，将 QBoson 凭据写入下面这个文件：
+在桌面版插件管理页面安装。本地源码需先执行 `npm install`，然后使用实际目录：
+
+```text
+link:C:/Users/<Windows 用户名>/Desktop/dsh-qboson-ising-solver
+```
+
+网页版和桌面版分别管理插件。安装包包含真机求解、工具入口、建模指导三个组件，完整使用时需全部启用。本地更新后，完全退出并重新启动对应的 DSH 实例，以加载组件清单。
+
+## 配置凭据与启动
+
+从[玻色量子云平台 SDK 页面](https://platform.qboson.com/sdkDownload)获取用户 ID 和 SDK Code，在 Windows 的以下文件中配置：
 
 ```text
 C:\Users\<Windows 用户名>\.dsh\.credentials.yaml
 ```
 
-如果 `.dsh` 目录或 `.credentials.yaml` 文件不存在，直接新建即可。也可以在 PowerShell 中执行：
-
-```powershell
-New-Item -ItemType Directory -Force "$HOME\.dsh" | Out-Null
-notepad "$HOME\.dsh\.credentials.yaml"
-```
-
-在文件中写入：
+文件或目录不存在时可自行创建，内容为：
 
 ```yaml
 refs:
-    QBOSON_USER_ID: "QBoson User ID"
-    QBOSON_SDK_CODE: "QBoson SDK Code"
+  QBOSON_USER_ID: "QBoson User ID"
+  QBOSON_SDK_CODE: "QBoson SDK Code"
 ```
 
-保存文件即可。插件会通过 DeepSeek Harness 的 credentials Service 读取这两个值，并在启动 Kaiwu worker 时用于 License 初始化。
+插件通过 DSH 的凭据服务读取这些值，用于真机 License 初始化。
 
-## 启动
-
-安装插件后，启动 DeepSeek Harness：
+网页版启动命令：
 
 ```powershell
 dsh web
 ```
 
-首次调用 `solve_ising` 时，插件会自动完成：
-
-```text
-准备固定版本 uv
-    ↓
-准备 Python 3.10
-    ↓
-创建插件私有 venv
-    ↓
-安装 kaiwu
-    ↓
-启动 Kaiwu worker
-    ↓
-初始化 QBoson License
-    ↓
-提交 CIMOptimizer 任务
-```
-
-运行时目录：
-
-```text
-$DSH_HOME/runtimes/dsh-qboson-ising-solver/
-├── uv/
-├── python/
-├── uv-cache/
-├── venv/
-└── runtime.json
-```
+首次准备环境或求解时，插件自动安装独立的 Python 3.10 和 Kaiwu SDK，需要网络连接。运行环境保存在 `$DSH_HOME/runtimes/dsh-qboson-ising-solver/`，后续直接复用。DSH 的 Shell、文件系统与子进程需要能访问同一工作区。
 
 ## 使用
 
-向 Agent 提供已经完成建模的 Ising Matrix，例如：
+### 业务问题建模与求解
+
+向 Agent 描述目标、数据、全部约束，以及是否要求真机求解。例如：
 
 ```text
-使用 solve_ising 求解下面的 Ising Matrix：
-
-[
-  [0,-1,0,-1,-1,0,0,-1,-1,0],
-  [-1,0,-1,0,0,-1,-1,-1,0,0],
-  [0,-1,0,-1,-1,0,0,0,-1,0],
-  [-1,0,-1,0,0,-1,-1,0,-1,0],
-  [-1,0,-1,0,0,-1,0,-1,0,-1],
-  [0,-1,0,-1,-1,0,0,0,-1,-1],
-  [0,-1,0,-1,0,0,0,0,0,-1],
-  [-1,-1,0,0,-1,0,0,0,-1,0],
-  [-1,0,-1,-1,0,-1,0,-1,0,-1],
-  [0,0,0,0,-1,-1,-1,0,-1,0]
-]
+请解决带权顶点覆盖问题：顶点成本为 [3,2,4]，边为 [(0,1),(1,2)]。
+请生成 Kaiwu 建模代码，保存矩阵和变量映射，用 QBoson 真机求解，
+再从真实候选解码，检查每条边是否被覆盖，报告顶点编号与原业务成本。
 ```
 
-Tool 输入：
+[可执行顶点覆盖示例](examples/kaiwu-workflow.py)提供 `build <任务目录>` 与 `decode <任务目录>` 两个入口，使用 `prepare_kaiwu_runtime` 返回的解释器执行。真机提交通过 `solve_ising_file` 完成。业务结果从返回的可行候选中按原业务成本选优。
+
+### 从文件求解已有矩阵
+
+向 Agent 提供矩阵 JSON 文件，或调用 `solve_ising_file`：
 
 ```json
 {
-  "ising_matrix": [
-    [0.0, -1.0, 0.5],
-    [-1.0, 0.0, 0.2],
-    [0.5, 0.2, 0.0]
-  ]
+  "matrix_path": "C:/workspace/cover/matrix.json",
+  "result_path": "C:/workspace/cover/raw-result.json"
 }
 ```
 
-输入验证包括：
+两个路径均需为绝对路径，输出目录需要已存在，结果文件需要尚不存在。输入支持二维数组或 `{"ising_matrix": [...]}`，可参考[矩阵文件示例](examples/ising-matrix-10.json)。
 
-- Matrix 非空；
-- Matrix 为二维数组；
-- 行列维度一致；
-- 所有元素均为有限数值。
+工具保存全部原始候选、Hamiltonian、求解耗时、任务标识与矩阵 SHA-256，并返回摘要。`saved=false` 表示求解已完成但保存失败，此时保存返回的 `raw_result_json`，不要重复提交。
 
-Kaiwu 求解调用：
+### 直接输入已有矩阵
 
-```python
-optimizer = CIMOptimizer(
-    task_name=task_name,
-    wait=True,
-    interval=interval,
-    project_no=project_no,
-    task_mode=TaskMode.OPTIMIZATION,
-)
-
-solutions = optimizer.solve(
-    matrix,
-    negtail_flip=False,
-    sort_solutions=True,
-)
-
-hamiltonians = optimizer.get_hamiltonian()
-```
-
-Tool 输出：
+调用 `solve_ising`，例如：
 
 ```json
-{
-  "dimension": 10,
-  "solutions": [
-    {
-      "spins": [-1, 1, -1, 1, 1, -1, -1, -1, 1, 1],
-      "hamiltonian": -30.0
-    }
-  ],
-  "solver_time_us": 5707040.0,
-  "task_name": "ising_dsh_0123456789ab"
-}
+{"ising_matrix": [[0, -1], [-1, 0]]}
 ```
 
-结果按 Hamiltonian 从低到高排列。每个 spin solution 的长度与 Matrix dimension 一致，spin 值属于 `{-1,+1}`。
+矩阵需为非空、有限数值的方阵。返回 `dimension`、`solutions`、`solver_time_us` 和 `task_name`；每个候选包含完整的 ±1 自旋及 `hamiltonian`，按 Hamiltonian 升序排列。已有矩阵缺少业务变量映射时，交付原始求解结果。
 
-## 求解配置
+求解超时或取消会结束本地 worker，云端任务状态需核对平台；本插件不提供云端任务续查或取消工具，状态不明时应避免重复提交。
 
-以下配置可通过启动 Harness 的进程环境设置：
+## 可选配置
 
-```text
-KAIWU_PROJECT_NO
-KAIWU_CHECKPOINT_DIR        默认 ~/.qboson-ising-dsh/checkpoints
-KAIWU_TASK_NAME_PREFIX      默认 ising_dsh
-KAIWU_CIM_INTERVAL_MINUTES  默认 1
-ISING_DSH_TIMEOUT_MS        默认 3600000
-ISING_DSH_GRACE_MS          默认 5000
-ISING_DSH_LOG_PATH          默认 ~/.qboson-ising-dsh/logs/worker.log
-ISING_DSH_LOG_LEVEL         默认 INFO
-```
+以下环境变量由启动 DSH 的进程读取：
 
-运行时管理配置：
+| 变量 | 用途或默认值 |
+| --- | --- |
+| `KAIWU_PROJECT_NO` | 真机 Project 编号 |
+| `KAIWU_CHECKPOINT_DIR` | 默认 `~/.qboson-ising-dsh/checkpoints` |
+| `KAIWU_TASK_NAME_PREFIX` | 默认 `ising_dsh` |
+| `KAIWU_CIM_INTERVAL_MINUTES` | 轮询间隔，默认 1 分钟 |
+| `ISING_DSH_TIMEOUT_MS` | 默认 3600000 毫秒 |
+| `ISING_DSH_GRACE_MS` | 默认 5000 毫秒 |
+| `ISING_DSH_LOG_PATH` | 默认 `~/.qboson-ising-dsh/logs/worker.log` |
+| `ISING_DSH_LOG_LEVEL` | 默认 `INFO` |
+| `QBOSON_ISING_RUNTIME_DIR` | 插件私有运行环境目录 |
+| `QBOSON_ISING_PYTHON` | 指定已安装 Kaiwu 的兼容 Python 3.10 解释器 |
+| `QBOSON_KAIWU_SPEC` | Kaiwu 安装规格，默认 `kaiwu` |
 
-```text
-QBOSON_ISING_RUNTIME_DIR    插件私有运行时目录
-QBOSON_ISING_PYTHON         指定兼容的 Python 3.10 解释器
-QBOSON_KAIWU_SPEC           Kaiwu 安装规格，默认 kaiwu
-```
+## 诊断与卸载
 
-`QBOSON_ISING_PYTHON` 指向的解释器需要为 Python 3.10，并能够导入 `kaiwu`。
+在项目目录运行 `npm run doctor`，或使用安装包提供的 `dsh-ising-doctor`，查看运行环境与凭据配置状态。诊断不会打印凭据值。运行环境准备好后，`node ./bin/dsh-ising-doctor.js --license` 可检查 License。
 
-## 生命周期与取消
-
-`solve_ising` 的取消信号会传递给 `ctx.isingSolver`。求解超时或取消时，插件结束当前 worker；后续调用会创建新的 worker。Provider Fiber 卸载时，Cordis effect 负责结束 worker。
-
-插件私有 Python 运行时作为持久安装状态保存在 `$DSH_HOME/runtimes/dsh-qboson-ising-solver`，供后续 Harness 会话复用。
-
-## 诊断
-
-插件提供：
-
-```text
-dsh-ising-doctor
-```
-
-用于查看 Harness Home、运行时位置、Python/Kaiwu 状态和凭据配置状态。诊断输出只显示凭据是否已配置。
-
-运行时已准备后，可执行 License 检查：
-
-```powershell
-node C:\Users\<Windows 用户名>\Desktop\dsh-qboson-ising-solver\bin\dsh-ising-doctor.js --license
-```
-
-## 卸载插件
-
-从 `web` profile 中移除 QBoson Ising Solver：
+从网页版移除：
 
 ```powershell
 dsh plugin --profile web remove dsh-qboson-ising-solver
 ```
+
+桌面版通过插件管理页面卸载。
+
+## 开发检查
+
+源码保留 `test/` 和 `python/tests/`，npm 安装包只包含运行文件、必要资源和示例。
+
+```powershell
+npm install
+$env:QBOSON_TEST_PYTHON = "<已安装 Kaiwu 的 Python 3.10 解释器绝对路径>"
+npm test
+& $env:QBOSON_TEST_PYTHON -B -m unittest discover -s python/tests -p "test_*.py"
+```
+
+测试覆盖组件加载、依赖生命周期、矩阵校验、结果保存、SDK 建模与解码，以及 worker 通信。真机边界使用模拟结果，不提交 SPQC 任务；未设置 `QBOSON_TEST_PYTHON` 时，Node 中的 SDK 和子进程集成用例会跳过。
