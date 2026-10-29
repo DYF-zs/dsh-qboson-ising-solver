@@ -1,11 +1,10 @@
-安装说明
-========
+# 安装说明
 
 1. 安装Python3.10（不区分小版本），暂不支持Python其它版本，Python安装请自行搜索相关教程。
 
 2. 创建虚拟环境，激活虚拟环境在命令行输入: python --version, 检查python版本是否为3.10。
 
-   `python 3.10 下载 <https://www.python.org/downloads/release/python-31011/>`_。
+   [python 3.10 下载](https://www.python.org/downloads/release/python-31011/)。
 
 3. 登录网站 (https://platform.qboson.com/) 获取用户ID和SDK授权码。
 
@@ -16,10 +15,8 @@
 
 6. 安装SDK，使用pip安装时注意whl文件路径和系统版本。
 
-    .. code:: console
-
-        pip3 install kaiwu-1.4.0-cp310-none-win_amd64.whl -i https://pypi.tuna.tsinghua.edu.cn/simple
+    ```console
+    pip3 install kaiwu-1.4.0-cp310-none-win_amd64.whl -i https://pypi.tuna.tsinghua.edu.cn/simple
+    ```
 
 7. 在首次使用CIMOptimizer/SimulatedAnnealingOptimizer时，需要按照控制台引导在控制台输入user_id及sdk_code来生成license。
-
-(图片见原仓库 docs/source 对应路径)

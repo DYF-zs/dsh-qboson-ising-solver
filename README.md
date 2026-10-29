@@ -1,5 +1,10 @@
 # QBoson Ising Solver for DeepSeek Harness
 
+[![玻色量子官网](https://img.shields.io/badge/QBoson-%E7%8E%BB%E8%89%B2%E9%87%8F%E5%AD%90%E5%AE%98%E7%BD%91-2563EB?style=for-the-badge)](https://www.qboson.com/)
+[![专用量子计算云平台](https://img.shields.io/badge/SPQC-%E9%87%8F%E5%AD%90%E4%BA%91%E5%B9%B3%E5%8F%B0-0F766E?style=for-the-badge)](https://platform.qboson.com/)
+[![Kaiwu Coding Skill](https://img.shields.io/badge/GitHub-Kaiwu_Coding_Skill-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/qboson/kaiwu-coding-skill)
+[![KPP Coding Skill](https://img.shields.io/badge/GitHub-KPP_Coding_Skill-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/qboson/kpp-coding-skill)
+
 `dsh-qboson-ising-solver` 是面向 DeepSeek Harness 的玻色量子（QBoson）组合优化插件，基于开物（Kaiwu）SDK，让 AI 智能体能够根据业务需求构建 QUBO / Ising 模型，调用 QBoson SPQC 真机求解，并还原、验证和保存业务结果。
 
 - **业务问题建模**：根据业务目标、数据和约束，生成并运行 Kaiwu 建模代码，支持选址、调度、路径规划、覆盖等组合优化问题。
@@ -8,8 +13,6 @@
 - **结果保存**：保存建模代码、矩阵、变量映射、原始求解结果和业务方案，记录任务标识，便于复查、追溯与复现。
 
 ## 安装
-
-插件版本 `0.2.0`，支持 DSH `0.2.1-rc.2`，适用于本地网页版和桌面版。
 
 **从源码安装到网页版**
 
@@ -113,7 +116,7 @@ dsh web
 | --- | --- |
 | `KAIWU_PROJECT_NO` | 真机 Project 编号 |
 | `KAIWU_CHECKPOINT_DIR` | 默认 `~/.qboson-ising-dsh/checkpoints` |
-| `KAIWU_TASK_NAME_PREFIX` | 默认 `ising_dsh` |
+| `KAIWU_TASK_NAME_PREFIX` | 真机任务名前缀，默认 `ising_dsh`，生成格式为 `ising_dsh_<随机标识>` |
 | `KAIWU_CIM_INTERVAL_MINUTES` | 轮询间隔，默认 1 分钟 |
 | `ISING_DSH_TIMEOUT_MS` | 默认 3600000 毫秒 |
 | `ISING_DSH_GRACE_MS` | 默认 5000 毫秒 |

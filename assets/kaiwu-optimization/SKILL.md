@@ -160,6 +160,7 @@ Community 不能假定具有本地经典求解器。
 
 - 调用 `prepare_kaiwu_runtime({})` 获取 `python_executable` 和实际 `kaiwu_version`，通过 DSH Shell 使用该解释器执行建模与解码脚本。PowerShell 使用 `& "<python_executable>" "<script.py>" ...`。
 - SDK 参考资料中的 `CIMOptimizer` 示例用于说明底层接口，DSH 中的真机执行入口为上述插件工具。本地经典求解按用户指定的后端和已有授权执行。
+- 真机任务名由插件生成，默认格式为 `ising_dsh_<随机标识>`。前缀通过插件配置 `taskNamePrefix` 或环境变量 `KAIWU_TASK_NAME_PREFIX` 设置；结果记录以求解工具实际返回的 `task_name` 为准。
 - 将矩阵保存为 UTF-8 JSON，格式为二维数组或 `{"ising_matrix": [...]}`，使用有限数值的非空方阵。提交前核对目标设备的维度与系数精度，保存业务输入、变量索引、常数、转换 offset、参考自旋和精度还原信息。
 - 调用 `solve_ising_file({"matrix_path":"<矩阵文件绝对路径>","result_path":"<结果文件绝对路径>"})`。输出目录需已存在，结果文件需尚不存在。小矩阵也可调用 `solve_ising({"ising_matrix": [...]})`，每次求解选择一个入口提交。
 - 文件工具保存全部原始自旋、Hamiltonian、耗时、任务名和矩阵 SHA-256。`saved=false` 时用写文件工具保存返回的 `raw_result_json`，随后解码该结果。

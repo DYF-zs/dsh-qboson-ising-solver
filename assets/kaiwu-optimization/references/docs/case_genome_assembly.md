@@ -1,46 +1,29 @@
-入门案例解析-基因组组装
-========================================
+# 入门案例解析-基因组组装
 
-什么是基因组组装
------------------------
+## 什么是基因组组装
 
 基因组组装（Genome
 assembly）是使用测序方法将待测物种的基因组生成序列片段（即read），然后根据reads之间的重叠区域对片段进行拼接。首先，这些片段被拼接成较长的连续序列（contig），然后将contigs拼接成更长的允许包含空白序列（gap）的scaffolds。通过消除scaffolds的错误和gaps，我们可以将这些scaffolds定位到染色体上，从而得到高质量的全基因组序列。这个过程对于研究物种的基因组结构、功能基因挖掘、调控代谢网络构建以及物种进化分析等方面具有重要意义。
 
 随着测序技术的进步和测序成本的降低，我们能够在短时间内获得大量的测序数据，然而基因组组装是一个复杂的过程，尤其是面临动植物等复杂且规模巨大的基因组的组装需要耗费大量的计算资源，因此，如何高效的分析和处理这些数据成为目前基因组学和生物信息学最亟待解决的问题。
 
-(图片见原仓库 docs/source 对应路径)
-
-图1 DNA 测序流程图(引用自：Next-Generation Sequencing (NGS)- Definition,
-Types (microbenotes.com))
-
-基因组组装常见算法
------------------------
+## 基因组组装常见算法
 
 基因组组装算法涉及多种方法，分为有参考基因组的组装和无参考的从头组装（de
 novo assembly），其中从头组装最常见的两个策略是基于德布鲁因图（De Bruijn
 graph）和Overlap-Layout-Consensus（OLC）的组装算法。
 
-德布鲁因图(De Bruijn graph):
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+### 德布鲁因图(De Bruijn graph):
 
 德布鲁因图是一种有向图，由节点和边构成。其要求是相邻两个节点的元素错开一个碱基。通过将测序得到的reads以k-mer方式排列，德布鲁因图可以帮助我们拼接成更长的Contig。例如，如果几条reads之间有overlap，那么就容易拼接成一个比较长的Contig。实际情况会更复杂，但我们通常保留主干路径，由主干路径组装成Contig1。
 
-Overlap-Layout-Consensus(OLC):
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+### Overlap-Layout-Consensus(OLC):
 
 OLC方法首先构建重叠图，然后将重叠图收束成Contig，最后选择每个Contig中最有可能的核苷酸序列。重叠图表示对于一些序列，前后有若干个碱基是一样的。多个reads片段可以构成重叠图。寻找最短的Contig序列，使得所有的reads都是该序列的子集，通常采用贪心算法实现。
 
-(图片见原仓库 docs/source 对应路径)
+## 应用量子计算解决基因组组装问题
 
-图2 OLC (左)和 DBG
-算法示意图（右）(引用自：https://qinqianshan.com/bioinformatics/bin/olc-dbg/)
-
-应用量子计算解决基因组组装问题
---------------------------------
-
-问题转化
-^^^^^^^^^^^^^^
+### 问题转化
 
 高质量的基因组装需要较高深度的测序才能满足要求，对于完整的人类基因组组装，通常建议的覆盖度在30x以上。以三代测序（如PacBio和Oxford
 Nanopore等）用于人类基因组组装为例，通常每个read可以达到几千到几万个碱基，覆盖30x的情况下，可能需要的reads数量在几百万到几千万不等。如此庞大的reads组装在计算重叠图(overlap
@@ -48,57 +31,52 @@ graph)时通常面临巨大的计算复杂度和算力需求，因此经典计�
 
 OLC算法中最关键的一步是通过构建重叠图来确定不同reads间的位置关系，这一步可以转换成组合优化问题的旅行商问题(Traveling
 Salesman
-Problem，TSP)。其中不同reads表示不同的城市结点，reads间的重叠长度作为结点间的权重，目标是将所有的reads按照它们之间的重叠长度进行排序，并尝试将它们组装成一个总体重叠长度最长的序列，如图三所示。
+Problem，TSP)。其中不同reads表示不同的城市结点，reads间的重叠长度作为结点间的权重，目标是将所有的reads按照它们之间的重叠长度进行排序，并尝试将它们组装成一个总体重叠长度最长的序列。
 
-(图片见原仓库 docs/source 对应路径)
+### 建模步骤
 
-图3 测序reads 组装转换为有向图模型
-
-建模步骤
-^^^^^^^^^^^^^^
-
-1. 变量定义
-""""""""""""
+#### 1. 变量定义
 
 在该模型中我们将所有reads设为节点，节点的边的权重为两个reads按顺序前后拼接的重叠长度，这样就构成一个带权有向图。
 目标为寻找总体重叠长度最长的reads序列则转化为寻找权重最大的哈密顿回路。
-将带权有向图用邻接矩阵表示: :math:`\text{tspAdjMatrix}_{ij}`, 元素的下标表示 :math:`\text{Reads}_{i}`
-在前、:math:`\text{Reads}_{j}` 在后的拼接重叠长度。如果重叠长度不大于阈值，或者 :math:`i = j`，
-则 :math:`\text{tspAdjMatrix}_{ij} = 0`。
-决策变量 :math:`\text{Reads}_{ij}` 取值为 :math:`\{0, 1\}`, 1表示 :math:`\text{Reads}_{i}` 排在第 :math:`j` 个位置，否则为0。
+将带权有向图用邻接矩阵表示: $\text{tspAdjMatrix}_{ij}$, 元素的下标表示 $\text{Reads}_{i}$
+在前、$\text{Reads}_{j}$ 在后的拼接重叠长度。如果重叠长度不大于阈值，或者 $i = j$，
+则 $\text{tspAdjMatrix}_{ij} = 0$。
+决策变量 $\text{Reads}_{ij}$ 取值为 $\{0, 1\}$, 1表示 $\text{Reads}_{i}$ 排在第 $j$ 个位置，否则为0。
 
 我们想得最大重叠长度，目标函数可写成:
 
-.. math::
-    H_{\text{obj}} = \delta\sum_{\left( u,v \right) \in E}^{}{\text{tsp}\text{AdjMatrix}}_{u,v}(\sum_{j = 0}^{n - 1}{\text{Reads}_{u,j}\text{Reads}_{v,j + 1}} + \text{Reads}_{u,n - 1}\text{Reads}_{v,0})
+$$
+H_{\text{obj}} = \delta\sum_{\left( u,v \right) \in E}^{}{\text{tsp}\text{AdjMatrix}}_{u,v}(\sum_{j = 0}^{n - 1}{\text{Reads}_{u,j}\text{Reads}_{v,j + 1}} + \text{Reads}_{u,n - 1}\text{Reads}_{v,0})
+$$
 
-2. 约束条件处理
-""""""""""""""""""""""""
+#### 2. 约束条件处理
 
-一个reads必须而且只能出现在序列中的一个位置， :math:`\sum_{j=1}^{n} \mathrm{{Reads\_Sort}}_{\mathrm{ij}} = 1`
+一个reads必须而且只能出现在序列中的一个位置， $\sum_{j=1}^{n} \mathrm{{Reads\_Sort}}_{\mathrm{ij}} = 1$
 
-序列中的一个位置必须而且只能被一个reads占用， :math:`\sum_{i=1}^{n} \mathrm{{Reads\_Sort}}_{\mathrm{ij}} = 1`
+序列中的一个位置必须而且只能被一个reads占用， $\sum_{i=1}^{n} \mathrm{{Reads\_Sort}}_{\mathrm{ij}} = 1$
 
 将以上两个约束写成QUBO形式，有：
 
-.. math::
-    H_{seq\_ con} = \gamma\sum_{i = 0}^{N - 1}{(\sum_{j = 0}^{N - 1}{\text{Read}s_{\text{Sort}}}_{\text{ij}} - 1)}^{2}
+$$
+H_{seq\_ con} = \gamma\sum_{i = 0}^{N - 1}{(\sum_{j = 0}^{N - 1}{\text{Read}s_{\text{Sort}}}_{\text{ij}} - 1)}^{2}
+$$
 
-.. math::
-    H_{\text{node}\_ con} = \gamma\sum_{j = 0}^{N - 1}{(\sum_{i = 0}^{N - 1}{\text{Read}s_{\text{Sort}}}_{\text{ij}} - 1)}^{2}
+$$
+H_{\text{node}\_ con} = \gamma\sum_{j = 0}^{N - 1}{(\sum_{i = 0}^{N - 1}{\text{Read}s_{\text{Sort}}}_{\text{ij}} - 1)}^{2}
+$$
 
-3. QUBO模型构建
-""""""""""""""""""""""""
+#### 3. QUBO模型构建
 
 如此，由以上的约束条件，我们可以构建一个遍历所有的点的路径的模型(又称哈密尔顿环):
 
-.. math::
-    H = -H_{\mathrm{obj}} + H_{\mathrm{seq\_con}} + H_{\mathrm{node\_con}}
+$$
+H = -H_{\mathrm{obj}} + H_{\mathrm{seq\_con}} + H_{\mathrm{node\_con}}
+$$
 
 优化目标是求 H 的最小值
 
-4. 使用开物SDK实现用Solver直接对QUBO Model进行求解
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+#### 4. 使用开物SDK实现用Solver直接对QUBO Model进行求解
 
 ```python
 """
@@ -396,30 +374,18 @@ if __name__ == "__main__":
 ```
 
 
-量子计算与经典方法得效果对比
----------------------------------
+## 量子计算与经典方法得效果对比
 
 我们比较了在不同问题规模下(reads数分别为7、8、9、10)SPQC真机和传统求解器Simulated
 Annealing、Tabu
 Search的求解时间。对比发现，在同等规模问题上，SPQC真机的求解时间要远少于Simulated
-Annealing、Tabu Search (左图)。同时，随着问题规模增大，SPQC
-真机求解时间相较于Simulated Annealing、Tabu Search更加稳定(右)。
-
-(图片见原仓库 docs/source 对应路径)
-
-图4
-不同问题规模下(reads数分别为7、8、9、10)“天工量子大脑”SPQC真机和传统求解器Simulated
-Annealing、Tabu Search的求解时间对比
+Annealing、Tabu Search。同时，随着问题规模增大，SPQC
+真机求解时间相较于Simulated Annealing、Tabu Search更加稳定。
 
 以reads
 数为7的问题求解为例，我们可以发现“天工量子大脑”SPQC真机相较于SA算法，其哈密顿量能快速下降以求得最优解。
 
-(图片见原仓库 docs/source 对应路径)
-
-图5 Reads数为7时的SPQC(红线)、SA(蓝线)哈密顿量演化图
-
-代码实现
----------
+## 代码实现
 
 ```python
 """

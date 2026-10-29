@@ -1,16 +1,12 @@
-新手教程-使用真机-云平台或者SDK
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+# 新手教程-使用真机-云平台或者SDK
 
-用例描述
-----------------
+## 用例描述
+
 通过旅行商问题(TravelingSalesmanProblem，TSP)展示从建模、提交Qubo矩阵到云平台、从云平台获取计算结果的全流程
 
+## 方式一：通过云平台上传QUBO矩阵计算
 
-方式一：通过云平台上传QUBO矩阵计算
---------------------------------------------
-
-代码建模并生成qubo矩阵
-============================================
+### 代码建模并生成qubo矩阵
 
 ```python
 # pylint: disable=<R0801>
@@ -82,50 +78,32 @@ if __name__ == "__main__":
 ```
 
 
-登录云平台上传矩阵
-=========================================
+### 登录云平台上传矩阵
 
 1. 登录专用量子云计算平台后进入控制台，选择真机后点击新建任务
 
-(图片见原仓库 docs/source 对应路径)
-
 2. 进入任务配置页面后，填写任务名称、上传矩阵，确认后点击下一步
-
-(图片见原仓库 docs/source 对应路径)
 
 3. 进入确认配置页面，确认任务和真机信息后点击确定按钮
 
-(图片见原仓库 docs/source 对应路径)
-
 4. 进入提交任务页面，显示提交成功
-
-(图片见原仓库 docs/source 对应路径)
 
 5. 返回控制台，任务正在校验中
 
-(图片见原仓库 docs/source 对应路径)
-
 6. 校验成功后任务进入排队中状态
-
-(图片见原仓库 docs/source 对应路径)
 
 7. 任务完成后点击详情进入结果详情页面
 
-(图片见原仓库 docs/source 对应路径)
-
 8. 查看结果详情（qubo解向量、qubo value演化曲线、任务执行时间等）
 
-(图片见原仓库 docs/source 对应路径)
+## 方式二：直接使用SDK调用真机
 
-
-方式二：直接使用SDK调用真机
----------------------------------
 下面是同样一个TSP的问题，使用SDK直接调用真机求解的例子。
 由于量子计算机有精度限制，例子中用SDK自带的PrecisionReducer进行精度适配。
 想了解更多的关于精度的知识，
 
-.. seealso::
-    - :doc:`../advanced/precision`
+> 另请参阅：
+> [精度处理](precision.md)
 
 ```python
 """
@@ -209,7 +187,7 @@ if __name__ == "__main__":
 
     # Configure the solver
     ckpt.save_dir = "./tmp"
-    optimizer = kw.cim.CIMOptimizer(task_name="tsp", task_mode=TaskMode.OPTIMIZATION)
+    optimizer = kw.cim.CIMOptimizer(task_name="ising_dsh_tsp", task_mode=TaskMode.OPTIMIZATION)
     optimizer = kw.preprocess.PrecisionReducer(optimizer, 8)
     sol_dict, qubo_val = optimizer.solve_qubo(qubo_model)
 
@@ -225,4 +203,3 @@ if __name__ == "__main__":
     else:
         print("Try again later")
 ```
-

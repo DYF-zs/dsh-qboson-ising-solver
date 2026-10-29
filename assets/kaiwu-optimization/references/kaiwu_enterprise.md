@@ -34,7 +34,7 @@ only_feasible_solution=..., truncated_precision=20)` 是 Ising/QUBO 求解器
 ```python
 # 1.4.0 源码树
 from kaiwu.preprocess import PrecisionReducer
-base = kw.cim.CIMOptimizer(task_name="user_supplied_task", wait=True)
+base = kw.cim.CIMOptimizer(task_name="ising_dsh_example", wait=True)
 solver = PrecisionReducer(
     base,
     precision=8,
