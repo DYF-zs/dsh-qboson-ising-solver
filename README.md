@@ -1,11 +1,14 @@
 # QBoson Ising Solver for DeepSeek Harness
 
-[![玻色量子官网](https://img.shields.io/badge/QBoson-%E7%8E%BB%E8%89%B2%E9%87%8F%E5%AD%90%E5%AE%98%E7%BD%91-2563EB?style=for-the-badge)](https://www.qboson.com/)
-[![专用量子计算云平台](https://img.shields.io/badge/SPQC-%E9%87%8F%E5%AD%90%E4%BA%91%E5%B9%B3%E5%8F%B0-0F766E?style=for-the-badge)](https://platform.qboson.com/)
-[![Kaiwu Coding Skill](https://img.shields.io/badge/GitHub-Kaiwu_Coding_Skill-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/qboson/kaiwu-coding-skill)
-[![KPP Coding Skill](https://img.shields.io/badge/GitHub-KPP_Coding_Skill-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/qboson/kpp-coding-skill)
+<p align="center">
+  <a href="https://www.qboson.com/"><img alt="玻色量子官网" src="https://img.shields.io/badge/QBoson-%E7%8E%BB%E8%89%B2%E9%87%8F%E5%AD%90%E5%AE%98%E7%BD%91-2563EB?style=flat"></a>
+  <a href="https://kaiwu.qboson.com/"><img alt="Kaiwu 社区" src="https://img.shields.io/badge/Kaiwu-%E7%A4%BE%E5%8C%BA-2563EB?style=flat"></a>
+  <a href="https://platform.qboson.com/"><img alt="专用量子计算云平台" src="https://img.shields.io/badge/SPQC-%E9%87%8F%E5%AD%90%E4%BA%91%E5%B9%B3%E5%8F%B0-0F766E?style=flat"></a>
+  <a href="https://github.com/qboson/kaiwu-coding-skill"><img alt="Kaiwu Coding Skill" src="https://img.shields.io/badge/GitHub-Kaiwu_Coding_Skill-181717?style=flat&amp;logo=github&amp;logoColor=white"></a>
+  <a href="https://github.com/qboson/kpp-coding-skill"><img alt="KPP Coding Skill" src="https://img.shields.io/badge/GitHub-KPP_Coding_Skill-181717?style=flat&amp;logo=github&amp;logoColor=white"></a>
+</p>
 
-`dsh-qboson-ising-solver` 是面向 DeepSeek Harness 的玻色量子（QBoson）组合优化插件，基于开物（Kaiwu）SDK，让 AI 智能体能够根据业务需求构建 QUBO / Ising 模型，调用 QBoson SPQC 真机求解，并还原、验证和保存业务结果。
+`dsh-qboson-ising-solver` 是面向 DeepSeek Harness 的玻色量子（QBoson）组合优化插件，基于 Kaiwu SDK，让 AI 智能体能够根据业务需求构建 QUBO / Ising 模型，调用 QBoson SPQC 真机求解，并还原、验证和保存业务结果。
 
 - **业务问题建模**：根据业务目标、数据和约束，生成并运行 Kaiwu 建模代码，支持选址、调度、路径规划、覆盖等组合优化问题。
 - **真机求解**：调用 QBoson SPQC 真机，支持直接输入 Ising Matrix 或从 JSON 文件读取矩阵，返回候选自旋解、Hamiltonian 和求解耗时。
