@@ -11,6 +11,8 @@ import time
 import traceback
 import uuid
 from typing import Any
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from license_dialog import ensure_authorized, license_available, license_path
 
 _LOGGER = logging.getLogger("qboson_ising_worker")
 
@@ -153,6 +155,27 @@ def _normalize_solver_result(solutions: Any, hamiltonians: Any, dimension: int) 
     return normalized
 
 
+def _authorize_kaiwu(kw, configure: bool = False) -> None:
+    try:
+        authorized = ensure_authorized(kw, force=configure)
+    except Exception as exc:
+        raise WorkerError("LICENSE_ERROR", "无法打开玻色量子授权窗口，请检查图形界面是否可用。") from exc
+    if not authorized:
+        raise WorkerError("LICENSE_CONFIG_MISSING", "玻色量子授权已取消。")
+
+
+def _prepare_runtime(configure_license: bool = False) -> dict[str, Any]:
+    _require_python_310()
+    import kaiwu as kw
+    from importlib.metadata import version
+    _authorize_kaiwu(kw, configure=configure_license)
+    return {
+        "python_executable": sys.executable,
+        "python_version": sys.version.split()[0],
+        "kaiwu_version": version("kaiwu"),
+    }
+
+
 class KaiwuRuntime:
     def __init__(self) -> None:
         _require_python_310()
@@ -171,18 +194,7 @@ class KaiwuRuntime:
         self.CIMOptimizer = CIMOptimizer
         self.TaskMode = TaskMode
 
-        user_id = os.getenv("QBOSON_USER_ID", "").strip()
-        sdk_code = os.getenv("QBOSON_SDK_CODE", "").strip()
-        if not user_id or not sdk_code:
-            raise WorkerError(
-                "LICENSE_CONFIG_MISSING",
-                "QBOSON_USER_ID and QBOSON_SDK_CODE must be supplied by the Harness credentials provider",
-            )
-
-        try:
-            kw.license.init(user_id=user_id, sdk_code=sdk_code)
-        except Exception as exc:
-            raise WorkerError("LICENSE_ERROR", f"Kaiwu license initialization failed: {exc}") from exc
+        _authorize_kaiwu(kw)
 
         checkpoint_dir = Path(os.path.expanduser(os.getenv(
             "KAIWU_CHECKPOINT_DIR",
@@ -253,8 +265,6 @@ def _doctor(check_license: bool) -> dict[str, Any]:
     report: dict[str, Any] = {
         "python_version": sys.version.split()[0],
         "python_310": sys.version_info.major == 3 and sys.version_info.minor == 10,
-        "qboson_user_id_set": bool(os.getenv("QBOSON_USER_ID", "").strip()),
-        "qboson_sdk_code_set": bool(os.getenv("QBOSON_SDK_CODE", "").strip()),
         "project_no_set": bool(os.getenv("KAIWU_PROJECT_NO", "").strip()),
         "checkpoint_dir": os.path.expanduser(os.getenv("KAIWU_CHECKPOINT_DIR", "~/.qboson-ising-dsh/checkpoints")),
     }
@@ -266,21 +276,36 @@ def _doctor(check_license: bool) -> dict[str, Any]:
 
     try:
         import kaiwu as kw
-        report["kaiwu"] = getattr(kw, "__version__", "installed")
+        from importlib.metadata import version
+        report["kaiwu"] = version("kaiwu")
         from kaiwu.cim import CIMOptimizer, TaskMode  # noqa: F401
         report["cim_api"] = True
         if check_license:
-            user_id = os.getenv("QBOSON_USER_ID", "").strip()
-            sdk_code = os.getenv("QBOSON_SDK_CODE", "").strip()
-            if not user_id or not sdk_code:
-                raise WorkerError("LICENSE_CONFIG_MISSING", "credentials are not configured")
-            kw.license.init(user_id=user_id, sdk_code=sdk_code)
-            report["license_init"] = True
+            report["license_present"] = license_path(kw).is_file()
+            report["license_valid"] = license_available(kw)
     except Exception as exc:
         report["kaiwu_error"] = str(exc)
         if check_license:
-            report["license_init"] = False
+            report["license_valid"] = False
     return report
+
+
+def _check_runtime() -> dict[str, Any]:
+    report = _doctor(check_license=True)
+    ready = report['python_310'] and 'numpy_error' not in report and 'kaiwu_error' not in report
+    result = {
+        'python_executable': sys.executable,
+        'python_version': report['python_version'],
+        'environment_status': 'ready' if ready else 'invalid',
+        'license_status': 'not_checked',
+    }
+    if 'kaiwu' in report:
+        result['kaiwu_version'] = report['kaiwu']
+    if ready:
+        result['license_status'] = ('valid' if report['license_valid'] else 'invalid') if report['license_present'] else 'missing'
+    else:
+        result['message'] = '需要 Python 3.10 和可用的 Kaiwu SDK，请调用 prepare_kaiwu_runtime。'
+    return result
 
 
 def _serve() -> int:
@@ -319,14 +344,33 @@ def _serve() -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description="QBoson Ising Solver Kaiwu worker")
     parser.add_argument("--doctor", action="store_true", help="print environment diagnostics and exit")
-    parser.add_argument("--check-license", action="store_true", help="doctor: also run kw.license.init")
+    parser.add_argument("--check-license", action="store_true", help="doctor: check the existing License without initializing it")
+    parser.add_argument("--authorize", action="store_true", help="prepare the SDK environment and authorize it for local or hardware solving")
+    parser.add_argument("--configure-license", action="store_true", help="open License configuration to renew authorization or switch accounts")
+    parser.add_argument("--check-runtime", action="store_true", help="report environment and License status")
     args = parser.parse_args()
 
     if args.doctor:
-        print(json.dumps(_doctor(args.check_license), ensure_ascii=False, indent=2))
-        return 0
+        report = _doctor(args.check_license)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 1 if args.check_license and not report.get("license_valid") else 0
 
     _isolate_protocol_stdout()
+
+    if args.check_runtime:
+        _write_json(_check_runtime())
+        return 0
+
+    if args.authorize or args.configure_license:
+        try:
+            _write_json(_prepare_runtime(configure_license=args.configure_license))
+            return 0
+        except WorkerError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        except Exception:
+            print("Kaiwu 运行环境准备失败，请检查 SDK 安装。", file=sys.stderr)
+            return 1
 
     try:
         _configure_logging()

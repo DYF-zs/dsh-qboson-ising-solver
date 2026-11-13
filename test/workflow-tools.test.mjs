@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { Context } from '@deepseek-ai/cordis'
 import { ToolRuntime } from '@deepseek-ai/dsh-tools'
+import * as nativeExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { LocalFileSystem } from '@deepseek-ai/dsh-fs-local'
 import * as tools from '../src/tool.js'
 import KaiwuProvider from '../src/provider-kaiwu.js'
@@ -27,6 +28,7 @@ async function setup(t, { filesystem = true, runtime = true } = {}) {
   })
   ctx.provide('systemPrompt', { tools() {} })
   new ToolRuntime(ctx)
+  await ctx.plugin(nativeExecutor).inertia
   let fsFiber
   if (filesystem) {
     fsFiber = ctx.plugin(LocalFileSystem, { cwd: directory })
@@ -41,18 +43,32 @@ async function setup(t, { filesystem = true, runtime = true } = {}) {
       return result
     },
   }
-  if (runtime) solver.prepareRuntime = async (signal) => {
-    signal.throwIfAborted()
-    return runtimeInfo
+  if (runtime) {
+    solver.checkRuntime = async (signal) => {
+      signal.throwIfAborted()
+      return { ...runtimeInfo, environment_status: 'ready', license_status: 'valid' }
+    }
+    solver.prepareRuntime = async (signal) => {
+      signal.throwIfAborted()
+      return runtimeInfo
+    }
+    solver.configureLicense = async (signal) => {
+      signal.throwIfAborted()
+      return runtimeInfo
+    }
   }
   const disposeSolver = ctx.provide('isingSolver', solver)
   const fiber = ctx.plugin(tools)
   await fiber.inertia
   assert.equal(fiber.state, 2)
   const signal = new AbortController().signal
-  const invoke = (name, args, callSignal = signal) => ctx.tools.execute({
-    callId: 'test', name, arguments: args, signal: callSignal,
-  })
+  const invoke = async (name, args, callSignal = signal, agent) => {
+    const batch = await ctx.tools.execute({
+      calls: [{ type: 'tool-call', id: 'test', name, arguments: JSON.stringify(args) }],
+      signal: callSignal, agent,
+    })
+    return batch.results[0].result
+  }
   const matrixPath = join(directory, 'matrix.json')
   const resultPath = join(directory, 'raw-result.json')
   await writeFile(matrixPath, JSON.stringify({ ising_matrix: matrix }))
@@ -73,6 +89,26 @@ test('file tool persists all solutions with matrix provenance through real DSH t
   assert.equal(state.ctx.tools.get('solve_ising_file'), undefined)
 })
 
+test('file result writes use the calling session workspace policy', async (t) => {
+  const state = await setup(t)
+  const session = { header: { cwd: state.directory } }
+  state.ctx.provide('sandboxPolicy', {
+    resolve: ({ session } = {}) => ({ mode: 'workspace-write', workspaceRoot: session?.header.cwd ?? '/host-workspace' }),
+  })
+  const write = state.ctx.fs.writeText.bind(state.ctx.fs)
+  state.ctx.fs.writeText = async (target, content, intent, signal, policy) => {
+    if (policy?.workspaceRoot !== state.directory) throw new Error('file access denied under workspace-write mode')
+    return write(target, content, intent, signal)
+  }
+  const outcome = await state.invoke('solve_ising_file', {
+    matrix_path: state.matrixPath, result_path: state.resultPath,
+  }, state.signal, { session })
+  assert.equal(outcome.isError, false)
+  assert.equal(outcome.value.saved, true)
+  assert.equal(state.calls.length, 1)
+  assert.deepEqual(JSON.parse(await readFile(state.resultPath, 'utf8')).solutions, result.solutions)
+})
+
 test('raw array input and legacy solve_ising keep their contracts', async (t) => {
   const state = await setup(t)
   await writeFile(state.matrixPath, JSON.stringify(matrix))
@@ -83,11 +119,48 @@ test('raw array input and legacy solve_ising keep their contracts', async (t) =>
   assert.deepEqual(legacy.value, result)
 })
 
+test('CSV and JSON submit the same matrix and preserve identical matrix provenance', async (t) => {
+  const state = await setup(t)
+  const formats = [
+    ['matrix.csv', '0,-1\n-1,0\n'],
+    ['matrix.CSV', '\uFEFF"0", "-1"\r\n"-1", "0"\r\n'],
+    ['matrix-scientific.csv', '+0.0,-1e0\r-1.0E+0,.0\r'],
+    ['matrix-decimal.csv', '0,-.125\n-1.25e-1,0\n', [[0, -.125], [-.125, 0]]],
+    ['matrix-bom.json', '\uFEFF' + JSON.stringify(matrix)],
+  ]
+  for (const [index, [name, content, expectedMatrix = matrix]] of formats.entries()) {
+    const matrixPath = join(state.directory, name)
+    const resultPath = join(state.directory, `result-${index}.json`)
+    await writeFile(matrixPath, content, 'utf8')
+    const outcome = await state.invoke('solve_ising_file', { matrix_path: matrixPath, result_path: resultPath })
+    assert.equal(outcome.isError, false, name)
+    assert.equal(outcome.value.saved, true)
+    assert.deepEqual(state.calls[index].request.isingMatrix, expectedMatrix)
+    const saved = JSON.parse(await readFile(resultPath, 'utf8'))
+    assert.equal(saved.matrix_sha256, createHash('sha256').update(JSON.stringify(expectedMatrix)).digest('hex'))
+    assert.deepEqual(saved.solutions, result.solutions)
+  }
+  assert.equal(state.calls.length, formats.length)
+})
+
+test('invalid CSV fails before hardware submission', async (t) => {
+  const state = await setup(t)
+  const matrixPath = join(state.directory, 'matrix.csv')
+  for (const content of ['', 'a,b\n-1,0', ',0\n-1,0', '0,\n-1,0', '0,-1,\n-1,0,', '0,-1\n\n-1,0', '0,NaN\n-1,0', '0,Infinity\n-1,0', '0,1e999\n-1,0', '0,0x10\n-1,0', '0,-1\n-1', '"0,-1\n-1,0']) {
+    await writeFile(matrixPath, content, 'utf8')
+    const outcome = await state.invoke('solve_ising_file', { matrix_path: matrixPath, result_path: state.resultPath })
+    assert.equal(outcome.isError, true, JSON.stringify(content))
+  }
+  assert.equal(state.calls.length, 0)
+})
+
 test('filesystem arrival, unload and reload only control the file tool', async (t) => {
   const state = await setup(t, { filesystem: false })
   const assertCoreTools = async () => {
     assert.equal((await state.invoke('solve_ising', { ising_matrix: matrix })).isError, false)
     assert.deepEqual((await state.invoke('prepare_kaiwu_runtime', {})).value, state.runtimeInfo)
+    assert.deepEqual((await state.invoke('configure_kaiwu_license', {})).value, state.runtimeInfo)
+    assert.equal((await state.invoke('check_kaiwu_runtime', {})).value.environment_status, 'ready')
   }
   assert.equal(state.ctx.tools.get('solve_ising_file'), undefined)
   await assertCoreTools()
@@ -109,6 +182,8 @@ test('filesystem arrival, unload and reload only control the file tool', async (
 test('solver providers without a Kaiwu runtime capability keep both solve tools', async (t) => {
   const state = await setup(t, { runtime: false })
   assert.equal(state.ctx.tools.get('prepare_kaiwu_runtime'), undefined)
+  assert.equal(state.ctx.tools.get('configure_kaiwu_license'), undefined)
+  assert.equal(state.ctx.tools.get('check_kaiwu_runtime'), undefined)
   assert.equal((await state.invoke('solve_ising', { ising_matrix: matrix })).isError, false)
   assert.equal((await state.invoke('solve_ising_file', { matrix_path: state.matrixPath, result_path: state.resultPath })).isError, false)
 })
@@ -117,13 +192,13 @@ test('solver service removal unloads every solver-dependent tool and supports re
   const state = await setup(t)
   state.disposeSolver()
   await new Promise(setImmediate)
-  for (const name of ['solve_ising', 'solve_ising_file', 'prepare_kaiwu_runtime']) {
+  for (const name of ['solve_ising', 'solve_ising_file', 'prepare_kaiwu_runtime', 'configure_kaiwu_license', 'check_kaiwu_runtime']) {
     assert.equal(state.ctx.tools.get(name), undefined)
   }
   state.ctx.provide('isingSolver', state.solver)
   await state.fiber.inertia
   await new Promise(setImmediate)
-  for (const name of ['solve_ising', 'solve_ising_file', 'prepare_kaiwu_runtime']) {
+  for (const name of ['solve_ising', 'solve_ising_file', 'prepare_kaiwu_runtime', 'configure_kaiwu_license', 'check_kaiwu_runtime']) {
     assert.ok(state.ctx.tools.get(name))
   }
 })
@@ -164,16 +239,130 @@ test('runtime tool returns interpreter facts and pre-aborted calls never submit'
   assert.equal(state.calls.length, 0)
 })
 
+test('License configuration is independently callable and never submits a solver task', async (t) => {
+  const state = await setup(t, { filesystem: false })
+  const outcome = await state.invoke('configure_kaiwu_license', {})
+  assert.equal(outcome.isError, false)
+  assert.deepEqual(outcome.value, state.runtimeInfo)
+  assert.equal((await state.invoke('configure_kaiwu_license', {}, AbortSignal.abort())).isError, true)
+  assert.equal(state.calls.length, 0)
+})
+
+test('runtime check returns actionable states through the DSH tool', async (t) => {
+  const state = await setup(t, { filesystem: false })
+  for (const [environment, license] of [['missing', 'not_checked'], ['invalid', 'not_checked'], ['ready', 'missing'], ['ready', 'invalid'], ['ready', 'valid']]) {
+    state.solver.checkRuntime = async () => ({ environment_status: environment, license_status: license, runtime_dir: state.directory })
+    const outcome = await state.invoke('check_kaiwu_runtime', {})
+    assert.equal(outcome.isError, false)
+    assert.equal(outcome.value.environment_status, environment)
+    assert.equal(outcome.value.license_status, license)
+  }
+  assert.equal(state.calls.length, 0)
+})
+
+test('preparation reuses a ready environment and valid License', async (t) => {
+  const ctx = new Context()
+  t.after(() => ctx.fiber.dispose())
+  const provider = new KaiwuProvider(ctx)
+  const info = { python_executable: '/test/python', python_version: '3.10.22', kaiwu_version: '1.4.3', runtime_dir: '/test' }
+  provider.checkRuntime = async () => ({ ...info, environment_status: 'ready', license_status: 'valid' })
+  provider.configureLicense = async () => { throw new Error('Unexpected authorization') }
+  assert.deepEqual(await provider.prepareRuntime(), info)
+})
+
+test('preparation refreshes an idle worker after renewing an invalid License', async (t) => {
+  const ctx = new Context()
+  t.after(() => ctx.fiber.dispose())
+  const provider = new KaiwuProvider(ctx)
+  let disposed = false
+  provider.client = { async dispose() { disposed = true } }
+  provider.checkRuntime = async () => ({ environment_status: 'ready', license_status: 'invalid' })
+  provider.runtime.resolvePython = async () => '/test/python'
+  provider.runtime.runChecked = async () => JSON.stringify({ python_executable: '/test/python', python_version: '3.10.22', kaiwu_version: '1.4.3' })
+  assert.equal((await provider.prepareRuntime()).python_executable, '/test/python')
+  assert.equal(disposed, true)
+  assert.equal(provider.client, undefined)
+})
+
+test('License configuration waits for active solving to finish', async (t) => {
+  const ctx = new Context()
+  t.after(() => ctx.fiber.dispose())
+  const provider = new KaiwuProvider(ctx)
+  let finish
+  provider.workerClient = async () => ({ request: () => new Promise((resolve) => { finish = resolve }) })
+  const solving = provider.solve({ isingMatrix: matrix })
+  await new Promise(setImmediate)
+  await assert.rejects(provider.configureLicense(), { code: 'KAIWU_RUNTIME_BUSY' })
+  finish(result)
+  assert.equal((await solving).task_name, result.task_name)
+  assert.equal(provider.activeSolves, 0)
+  provider.runtime.resolvePython = async () => '/test/python'
+  provider.runtime.runChecked = async () => JSON.stringify({ python_executable: '/test/python' })
+  assert.equal((await provider.configureLicense()).python_executable, '/test/python')
+})
+
+test('authorization excludes new solves and releases the environment after cancellation', async (t) => {
+  const ctx = new Context()
+  t.after(() => ctx.fiber.dispose())
+  const provider = new KaiwuProvider(ctx)
+  let rejectAuthorization
+  provider.runtime.resolvePython = () => new Promise((_resolve, reject) => { rejectAuthorization = reject })
+  const configuring = provider.configureLicense()
+  await assert.rejects(provider.solve({ isingMatrix: matrix }), { code: 'KAIWU_RUNTIME_BUSY' })
+  await assert.rejects(provider.configureLicense(), { code: 'KAIWU_RUNTIME_BUSY' })
+  rejectAuthorization(new Error('Authorization cancelled'))
+  await assert.rejects(configuring, /Authorization cancelled/)
+  provider.workerClient = async () => ({ request: async () => result })
+  assert.equal((await provider.solve({ isingMatrix: matrix })).task_name, result.task_name)
+})
+
+test('renewing a License uses the prepared environment and refreshes the worker after success', async (t) => {
+  const ctx = new Context()
+  t.after(() => ctx.fiber.dispose())
+  const provider = new KaiwuProvider(ctx)
+  let disposed = false
+  provider.client = { async dispose() { disposed = true } }
+  provider.clientPython = '/test/python'
+  provider.runtime.resolvePython = async (_signal, options) => {
+    assert.equal(options.autoSetup, false)
+    return '/test/python'
+  }
+  provider.runtime.runChecked = async (argv) => {
+    assert.equal(argv[2], '--configure-license')
+    return JSON.stringify({ python_executable: '/test/python', python_version: '3.10.22', kaiwu_version: '1.4.3' })
+  }
+  assert.equal((await provider.configureLicense()).python_executable, '/test/python')
+  assert.equal(disposed, true)
+  assert.equal(provider.client, undefined)
+  assert.equal(provider.clientPython, undefined)
+})
+
+test('cancelled License configuration keeps the existing worker available', async (t) => {
+  const ctx = new Context()
+  t.after(() => ctx.fiber.dispose())
+  const provider = new KaiwuProvider(ctx)
+  let disposed = false
+  const client = { async dispose() { disposed = true } }
+  provider.client = client
+  provider.runtime.resolvePython = async () => '/test/python'
+  provider.runtime.runChecked = async () => { throw new Error('Authorization cancelled') }
+  await assert.rejects(provider.configureLicense(), /Authorization cancelled/)
+  assert.equal(disposed, false)
+  assert.equal(provider.client, client)
+})
+
 test('Kaiwu runtime preparation does not resolve credentials or start a solver', async (t) => {
   const ctx = new Context()
   t.after(() => ctx.fiber.dispose())
   ctx.provide('subprocess', {})
   ctx.provide('credentials', { resolve() { throw new Error('No credential reads allowed') } })
   const provider = new KaiwuProvider(ctx)
+  provider.checkRuntime = async () => ({ environment_status: 'missing', license_status: 'not_checked' })
   provider.runtime.resolvePython = async () => '/test/python'
   provider.runtime.runChecked = async (argv, options) => {
     assert.equal(argv[0], '/test/python')
-    assert.equal(argv[1], '-c')
+    assert.equal(argv[1], fileURLToPath(new URL('../python/qboson_ising_worker/worker.py', import.meta.url)))
+    assert.equal(argv[2], '--authorize')
     assert.deepEqual(options.env, { PYTHONUTF8: '1' })
     return JSON.stringify({ python_executable: '/test/python', python_version: '3.10.21', kaiwu_version: '1.4.1' })
   }
@@ -181,6 +370,40 @@ test('Kaiwu runtime preparation does not resolve credentials or start a solver',
   assert.equal(info.python_executable, '/test/python')
   assert.equal(info.kaiwu_version, '1.4.1')
   assert.equal(provider.client, undefined)
+})
+
+test('runtime preparation fails before returning an interpreter when authorization is cancelled', async (t) => {
+  const ctx = new Context()
+  t.after(() => ctx.fiber.dispose())
+  const provider = new KaiwuProvider(ctx)
+  provider.checkRuntime = async () => ({ environment_status: 'ready', license_status: 'missing' })
+  provider.runtime.resolvePython = async () => '/test/python'
+  provider.runtime.runChecked = async () => { throw new Error('Authorization cancelled') }
+  await assert.rejects(provider.prepareRuntime(), /Authorization cancelled/)
+  assert.equal(provider.client, undefined)
+})
+
+test('all tools present informative pending-state cards while calls run', async (t) => {
+  const state = await setup(t)
+  const calls = {
+    check_kaiwu_runtime: {},
+    prepare_kaiwu_runtime: {},
+    configure_kaiwu_license: {},
+    solve_ising: { ising_matrix: matrix },
+    solve_ising_file: { matrix_path: state.matrixPath, result_path: state.resultPath },
+  }
+  for (const [name, args] of Object.entries(calls)) {
+    const tool = state.ctx.tools.get(name)
+    const view = tool.presentCall(args)
+    assert.equal(view.card, 'generic', name)
+    assert.ok(view.title.length > 0, name)
+    assert.ok(view.content.some((block) => block.type === 'text' && block.text.length > 0), name)
+  }
+  for (const name of ['solve_ising', 'solve_ising_file']) {
+    // Arguments the schema rejects fall back to the generic presentation without throwing.
+    assert.equal(state.ctx.tools.get(name).presentCall({ unexpected: true }), undefined, name)
+  }
+  assert.match(state.ctx.tools.get('solve_ising').presentCall({ ising_matrix: matrix }).title, /2×2/)
 })
 
 test('SDK build → DSH file tool with fixture solver → SDK business decode', {

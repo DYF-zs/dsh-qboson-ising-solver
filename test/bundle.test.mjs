@@ -18,7 +18,6 @@ test('installation bundle mounts three plugins with independent Skill registrati
   new SkillRegistry(ctx)
   await ctx.plugin(LocalFileSystem, { cwd: process.cwd() }).inertia
   ctx.provide('subprocess', {})
-  ctx.provide('credentials', { resolve() { throw new Error('Plugin loading must not read credentials') } })
   const fibers = []
   for (const entry of entries) {
     const module = await import(entry.name)
@@ -28,13 +27,13 @@ test('installation bundle mounts three plugins with independent Skill registrati
     fibers.push(fiber)
   }
   await new Promise(setImmediate)
-  for (const name of ['solve_ising', 'solve_ising_file', 'prepare_kaiwu_runtime']) {
+  for (const name of ['solve_ising', 'solve_ising_file', 'prepare_kaiwu_runtime', 'configure_kaiwu_license', 'check_kaiwu_runtime']) {
     assert.ok(ctx.tools.get(name))
   }
   assert.ok((await ctx.skills.get('kaiwu-optimization')).content)
   await fibers[0].dispose()
   await new Promise(setImmediate)
-  for (const name of ['solve_ising', 'solve_ising_file', 'prepare_kaiwu_runtime']) {
+  for (const name of ['solve_ising', 'solve_ising_file', 'prepare_kaiwu_runtime', 'configure_kaiwu_license', 'check_kaiwu_runtime']) {
     assert.equal(ctx.tools.get(name), undefined)
   }
   assert.ok((await ctx.skills.get('kaiwu-optimization')).content)

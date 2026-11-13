@@ -1,5 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { registerFileTool, registerRuntimeTool } from './execution-tools.js'
+import { registerCheckTool, registerFileTool, registerLicenseTool, registerRuntimeTool } from './execution-tools.js'
 
 export const name = 'qboson-ising-tools'
 export const inject = ['tools', 'isingSolver']
@@ -53,11 +53,22 @@ export function apply(ctx) {
         text: JSON.stringify(value, null, 2),
       }],
     },
+    presentCall: (args) => ({
+      card: 'generic',
+      title: `提交 ${Array.isArray(args.ising_matrix) ? `${args.ising_matrix.length}×${args.ising_matrix.length}` : 'N×N'} Ising 矩阵到 QBoson SPQC 真机求解`,
+      kind: 'execute',
+      content: [{
+        type: 'text',
+        text: '正在云端真机求解并等待候选解。首次使用会先自动准备 Python 3.10 / Kaiwu 运行环境（下载依赖可能需要几分钟），随后可能弹出授权窗口；已就绪的环境则直接求解，通常数十秒内完成。',
+      }],
+    }),
     async execute(args, exec) {
       return ctx.isingSolver.solve({ isingMatrix: args.ising_matrix }, exec.signal)
     },
   }))
 
   if (typeof ctx.isingSolver.prepareRuntime === 'function') registerRuntimeTool(ctx)
+  if (typeof ctx.isingSolver.configureLicense === 'function') registerLicenseTool(ctx)
+  if (typeof ctx.isingSolver.checkRuntime === 'function') registerCheckTool(ctx)
   ctx.inject(['fs'], registerFileTool)
 }

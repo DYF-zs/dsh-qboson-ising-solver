@@ -6,8 +6,11 @@ import { evaluatePluginCompatibility, getDshRuntimeVersion } from '@deepseek-ai/
 const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
 
 test('plugin passes the target DSH runtime compatibility gate without exemptions', () => {
-  assert.equal(getDshRuntimeVersion(), '0.2.1-rc.2')
+  assert.equal(getDshRuntimeVersion(), manifest.devDependencies['@deepseek-ai/dsh-app-boot'])
   assert.equal(evaluatePluginCompatibility(manifest), undefined)
+  for (const version of ['0.2.2-rc.2', '0.2.2-rc.3']) {
+    assert.equal(evaluatePluginCompatibility(manifest, {}, version), undefined)
+  }
 })
 
 test('compatibility gate reproduces the old desktop rejection', () => {

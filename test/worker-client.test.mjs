@@ -1,8 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { fileURLToPath } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import { LocalSubprocessRuntime } from '@deepseek-ai/dsh-subprocess-local'
 import { KaiwuWorkerClient } from '../src/worker-client.js'
@@ -10,6 +11,23 @@ import KaiwuProvider from '../src/provider-kaiwu.js'
 
 const python = process.env.QBOSON_TEST_PYTHON
 const options = { skip: !python && 'Set QBOSON_TEST_PYTHON to a Python 3.10/Kaiwu interpreter' }
+
+test('Kaiwu solve uses its runtime without consulting DSH credentials', async (t) => {
+  const ctx = new Context()
+  t.after(() => ctx.fiber.dispose())
+  ctx.provide('credentials', { resolve() { throw new Error('Credential store must not be consulted') } })
+  const provider = new KaiwuProvider(ctx)
+  provider.workerClient = async () => ({
+    async request(payload, signal, timeout, env) {
+      assert.equal(env.QBOSON_USER_ID, undefined)
+      assert.equal(env.QBOSON_SDK_CODE, undefined)
+      assert.deepEqual(payload.ising_matrix, [[0, -1], [-1, 0]])
+      return { dimension: 2, solutions: [{ spins: [1, -1], hamiltonian: -2 }], solver_time_us: 1, task_name: 'fixture' }
+    },
+  })
+  const result = await provider.solve({ isingMatrix: [[0, -1], [-1, 0]] })
+  assert.equal(result.task_name, 'fixture')
+})
 
 test('worker protocol and cancellation work with the target DSH subprocess provider', options, async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-ising-worker-test-'))
@@ -49,9 +67,29 @@ test('runtime discovery uses the target DSH subprocess provider without credenti
   t.after(() => ctx.fiber.dispose())
   new LocalSubprocessRuntime(ctx)
   ctx.provide('credentials', { resolve() { throw new Error('Runtime discovery must not read credentials') } })
-  const provider = new KaiwuProvider(ctx, { pythonExecutable: python })
+  const provider = new KaiwuProvider(ctx, { pythonExecutable: python, workerPath: fileURLToPath(new URL('./fixtures/runtime-authorized.py', import.meta.url)) })
   const info = await provider.prepareRuntime(new AbortController().signal)
   assert.match(info.python_version, /^3\.10\./)
   assert.ok(info.kaiwu_version)
   assert.equal(provider.client, undefined)
+  const configured = await provider.configureLicense(new AbortController().signal)
+  assert.equal(configured.python_executable, info.python_executable)
+  assert.equal(configured.kaiwu_version, info.kaiwu_version)
+  assert.equal(provider.client, undefined)
+})
+
+test('real SDK inspection leaves the runtime directory uncreated', options, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'qboson-sdk-inspection-'))
+  const ctx = new Context()
+  t.after(async () => { await ctx.fiber.dispose(); await rm(directory, { recursive: true, force: true }) })
+  new LocalSubprocessRuntime(ctx)
+  const root = join(directory, 'runtime')
+  const provider = new KaiwuProvider(ctx, { pythonExecutable: python, runtimeDir: root })
+  const status = await provider.checkRuntime()
+  assert.equal(status.environment_status, 'ready')
+  assert.ok(['missing', 'invalid', 'valid'].includes(status.license_status))
+  assert.match(status.python_version, /^3\.10\./)
+  assert.ok(status.kaiwu_version)
+  assert.equal(provider.client, undefined)
+  await assert.rejects(stat(root), { code: 'ENOENT' })
 })

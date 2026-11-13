@@ -1,6 +1,5 @@
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { IsingSolverService } from './service.js'
 import { validateIsingMatrix } from './matrix.js'
 import { validateAndNormalizeResult } from './result.js'
@@ -12,8 +11,6 @@ const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const DEFAULT_WORKER_PATH = resolve(PACKAGE_ROOT, 'python', 'qboson_ising_worker', 'worker.py')
 const DEFAULT_TIMEOUT_MS = 3_600_000
 const DEFAULT_GRACE_MS = 5_000
-const DEFAULT_USER_ID_REF = 'QBOSON_USER_ID'
-const DEFAULT_SDK_CODE_REF = 'QBOSON_SDK_CODE'
 
 function positiveInteger(value, fallback, name) {
   if (value === undefined || value === null || value === '') return fallback
@@ -32,14 +29,12 @@ function optionalString(value) {
 
 /** Kaiwu SDK provider for ctx.isingSolver. */
 export default class KaiwuIsingSolverProvider extends IsingSolverService {
-  static inject = ['subprocess', 'credentials']
+  static inject = ['subprocess']
 
   constructor(ctx, config = {}) {
     super(ctx)
 
     this.ctx = ctx
-    this.userIdRef = credentialRef(config.userIdCredential ?? DEFAULT_USER_ID_REF)
-    this.sdkCodeRef = credentialRef(config.sdkCodeCredential ?? DEFAULT_SDK_CODE_REF)
 
     this.timeoutMs = positiveInteger(
       config.timeoutMs ?? process.env.ISING_DSH_TIMEOUT_MS,
@@ -72,33 +67,13 @@ export default class KaiwuIsingSolverProvider extends IsingSolverService {
     this.runtime = new ManagedKaiwuRuntime(ctx, config)
     this.client = undefined
     this.clientPython = undefined
+    this.activeSolves = 0
+    this.authorizationInProgress = false
     this.workerPath = optionalString(config.workerPath ?? process.env.QBOSON_ISING_WORKER_PATH) ?? DEFAULT_WORKER_PATH
     this.cwd = optionalString(config.cwd) ?? process.cwd()
     this.graceMs = graceMs
 
     ctx.effect(() => () => this.client?.dispose())
-  }
-
-  async resolveCredential(ref, label) {
-    const hit = await this.ctx.credentials.resolve(ref)
-    if (hit?.value) return hit.value
-    throw new IsingSolverError(
-      'LICENSE_CONFIG_MISSING',
-      `${label} is not configured. Store ${String(ref)} through the Harness credentials service.`,
-    )
-  }
-
-  async workerEnv() {
-    const [userId, sdkCode] = await Promise.all([
-      this.resolveCredential(this.userIdRef, 'QBoson user ID'),
-      this.resolveCredential(this.sdkCodeRef, 'QBoson SDK code'),
-    ])
-
-    return {
-      ...this.baseEnv,
-      QBOSON_USER_ID: userId,
-      QBOSON_SDK_CODE: sdkCode,
-    }
   }
 
   async workerClient(signal) {
@@ -115,34 +90,81 @@ export default class KaiwuIsingSolverProvider extends IsingSolverService {
     return this.client
   }
 
+  async checkRuntime(signal) {
+    signal?.throwIfAborted()
+    const environment = await this.runtime.inspectEnvironment()
+    const result = { ...environment, license_status: 'not_checked', runtime_dir: this.runtime.root }
+    if (!environment.python_executable) return result
+    try {
+      const stdout = await this.runtime.runChecked(
+        [environment.python_executable, '-B', this.workerPath, '--check-runtime'],
+        { env: { PYTHONUTF8: '1', PYTHONDONTWRITEBYTECODE: '1' }, signal, cwd: this.cwd, code: 'RUNTIME_CHECK_FAILED' },
+      )
+      Object.assign(result, JSON.parse(stdout))
+      const expectedVersion = /^kaiwu==([^\s]+)$/.exec(this.runtime.kaiwuSpec)?.[1]
+      if (environment.environment_status === 'invalid'
+        || (!this.runtime.explicitPython && expectedVersion && result.kaiwu_version !== expectedVersion)) {
+        result.environment_status = 'invalid'
+        result.message = '运行环境需要更新，请调用 prepare_kaiwu_runtime。'
+      }
+    } catch {
+      signal?.throwIfAborted()
+      result.environment_status = 'invalid'
+      result.message = 'Python 运行环境无法检查，请调用 prepare_kaiwu_runtime。'
+    }
+    return result
+  }
+
   async prepareRuntime(signal) {
-    const python = await this.runtime.resolvePython(signal)
-    const script = [
-      'import sys,json',
-      'from importlib.metadata import version',
-      'print(json.dumps({"python_executable":sys.executable,"python_version":sys.version.split()[0],"kaiwu_version":version("kaiwu")}))',
-    ].join('; ')
-    const stdout = await this.runtime.runChecked([python, '-c', script], {
-      env: { PYTHONUTF8: '1' }, signal, code: 'PYTHON_RUNTIME_INVALID',
-    })
-    return {
-      ...JSON.parse(stdout),
-      runtime_dir: this.runtime.root,
+    const status = await this.checkRuntime(signal)
+    if (status.environment_status === 'ready' && status.license_status === 'valid') {
+      const { python_executable, python_version, kaiwu_version, runtime_dir } = status
+      return { python_executable, python_version, kaiwu_version, runtime_dir }
+    }
+    return this.configureLicense(signal, { prepare: true })
+  }
+
+  async configureLicense(signal, { prepare = false } = {}) {
+    if (this.activeSolves || this.authorizationInProgress) {
+      throw new IsingSolverError('KAIWU_RUNTIME_BUSY', '当前有求解或授权操作正在进行，请完成后重试。')
+    }
+    this.authorizationInProgress = true
+    try {
+      const python = await this.runtime.resolvePython(signal, prepare ? undefined : { autoSetup: false })
+      const mode = prepare ? '--authorize' : '--configure-license'
+      const stdout = await this.runtime.runChecked([python, this.workerPath, mode], {
+        env: { PYTHONUTF8: '1' }, signal, code: 'LICENSE_ERROR',
+      })
+      const info = {
+        ...JSON.parse(stdout),
+        runtime_dir: this.runtime.root,
+      }
+      await this.client?.dispose()
+      this.client = undefined
+      this.clientPython = undefined
+      return info
+    } finally {
+      this.authorizationInProgress = false
     }
   }
 
   async solve(request, signal) {
     const dimension = validateIsingMatrix(request?.isingMatrix)
-    const [env, client] = await Promise.all([
-      this.workerEnv(),
-      this.workerClient(signal),
-    ])
-    const raw = await client.request(
-      { op: 'solve', ising_matrix: request.isingMatrix },
-      signal,
-      this.timeoutMs,
-      env,
-    )
-    return validateAndNormalizeResult(raw, dimension)
+    if (this.authorizationInProgress) {
+      throw new IsingSolverError('KAIWU_RUNTIME_BUSY', '正在配置 Kaiwu 环境或授权，请完成后重试。')
+    }
+    this.activeSolves++
+    try {
+      const client = await this.workerClient(signal)
+      const raw = await client.request(
+        { op: 'solve', ising_matrix: request.isingMatrix },
+        signal,
+        this.timeoutMs,
+        this.baseEnv,
+      )
+      return validateAndNormalizeResult(raw, dimension)
+    } finally {
+      this.activeSolves--
+    }
   }
 }

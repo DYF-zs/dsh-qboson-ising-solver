@@ -1,11 +1,16 @@
 import { constants as fsConstants } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir, platform } from 'node:os'
-import { isAbsolute, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { IsingSolverError, errorMessage } from './errors.js'
 
-const UV_VERSION = '0.12.12'
-const RUNTIME_SCHEMA = 1
+const UV_VERSION = '0.13.8'
+const PYTHON_VERSION = '3.10.22'
+const KAIWU_SPEC = 'kaiwu==1.4.3'
+const REQUIREMENTS_PATH = fileURLToPath(new URL('../python/requirements.txt', import.meta.url))
+const RUNTIME_SCHEMA = 2
 
 function optionalString(value) {
   if (value === undefined || value === null) return undefined
@@ -30,15 +35,25 @@ export function defaultRuntimeRoot(env = process.env) {
   )
 }
 
-export function venvPythonPath(venvDir, currentPlatform = platform()) {
+export function venvPythonPath(venvDir, currentPlatform = platform(), manager = 'uv') {
   return currentPlatform === 'win32'
-    ? join(venvDir, 'Scripts', 'python.exe')
+    ? manager === 'conda' ? join(venvDir, 'python.exe') : join(venvDir, 'Scripts', 'python.exe')
     : join(venvDir, 'bin', 'python')
 }
 
 function privateUvCandidates(uvDir, currentPlatform = platform()) {
   const executable = currentPlatform === 'win32' ? 'uv.exe' : 'uv'
   return [join(uvDir, executable), join(uvDir, 'bin', executable)]
+}
+
+function macExecutableCandidates(name, home = homedir()) {
+  if (name === 'uv') {
+    return [join(home, '.local', 'bin', 'uv'), '/opt/homebrew/bin/uv', '/usr/local/bin/uv']
+  }
+  return [
+    ...['miniforge3', 'miniconda3', 'anaconda3'].map((directory) => join(home, directory, 'bin', 'conda')),
+    '/opt/anaconda3/bin/conda', '/opt/miniconda3/bin/conda',
+  ]
 }
 
 function installerUrl(currentPlatform = platform()) {
@@ -83,7 +98,7 @@ export class ManagedKaiwuRuntime {
     this.ctx = ctx
     this.explicitPython = optionalString(config.pythonExecutable ?? process.env.QBOSON_ISING_PYTHON)
     this.autoSetup = config.autoSetup !== false
-    this.kaiwuSpec = optionalString(config.kaiwuSpec ?? process.env.QBOSON_KAIWU_SPEC) ?? 'kaiwu'
+    this.kaiwuSpec = optionalString(config.kaiwuSpec ?? process.env.QBOSON_KAIWU_SPEC) ?? KAIWU_SPEC
     this.root = resolve(optionalString(config.runtimeDir) ?? defaultRuntimeRoot())
     this.venvDir = join(this.root, 'venv')
     this.managedPython = venvPythonPath(this.venvDir)
@@ -92,7 +107,7 @@ export class ManagedKaiwuRuntime {
     this.setupPromise = undefined
   }
 
-  async resolvePython(signal) {
+  async resolvePython(signal, { autoSetup = this.autoSetup } = {}) {
     await mkdir(this.root, { recursive: true })
 
     if (this.explicitPython) {
@@ -100,7 +115,7 @@ export class ManagedKaiwuRuntime {
       return this.explicitPython
     }
 
-    if (await exists(this.managedPython) && await this.runtimeMetadataMatches()) {
+    if ((await this.inspectEnvironment()).environment_status === 'ready') {
       try {
         await this.assertCompatiblePython(this.managedPython, signal, true)
         return this.managedPython
@@ -109,7 +124,7 @@ export class ManagedKaiwuRuntime {
       }
     }
 
-    if (!this.autoSetup) {
+    if (!autoSetup) {
       throw new IsingSolverError(
         'PYTHON_RUNTIME_MISSING',
         'The managed Kaiwu Python 3.10 runtime is not ready and automatic setup is disabled.',
@@ -120,16 +135,37 @@ export class ManagedKaiwuRuntime {
     return this.managedPython
   }
 
+  async inspectEnvironment() {
+    if (this.explicitPython) {
+      return { environment_status: 'ready', python_executable: this.explicitPython }
+    }
+    const current = await this.runtimeMetadataMatches()
+    for (const python of new Set([this.managedPython, venvPythonPath(this.venvDir, platform(), 'conda')])) {
+      if (await exists(python)) {
+        return { environment_status: current && python === this.managedPython ? 'ready' : 'invalid', python_executable: python }
+      }
+    }
+    return { environment_status: 'missing' }
+  }
 
   async runtimeMetadataMatches() {
     try {
       const value = JSON.parse(await readFile(join(this.root, 'runtime.json'), 'utf8'))
-      return value?.schema === RUNTIME_SCHEMA
-        && value?.python === '3.10'
+      const matches = value?.schema === RUNTIME_SCHEMA
+        && value?.python === PYTHON_VERSION
         && value?.kaiwu === this.kaiwuSpec
+        && value?.requirements === await this.requirementsFingerprint()
+      if (matches) this.managedPython = venvPythonPath(this.venvDir, platform(), value.manager)
+      return matches
     } catch {
       return false
     }
+  }
+
+  async requirementsFingerprint() {
+    return this.kaiwuSpec === KAIWU_SPEC
+      ? createHash('sha256').update(await readFile(REQUIREMENTS_PATH)).digest('hex')
+      : undefined
   }
 
   async ensureSetup(signal) {
@@ -144,47 +180,105 @@ export class ManagedKaiwuRuntime {
     if (signal?.aborted) throw signal.reason ?? new IsingSolverError('ABORTED', 'Runtime setup aborted')
 
     await mkdir(this.root, { recursive: true })
-    console.error('[dsh-qboson-ising-solver] Preparing private Python 3.10 runtime (first use only)...')
+    console.error(`[dsh-qboson-ising-solver] Preparing private Python ${PYTHON_VERSION}/Kaiwu runtime...`)
 
-    const uv = await this.ensureUv(signal)
+    const manager = await this.selectManager(signal)
     const env = runtimeEnv(this.root)
+    this.managedPython = venvPythonPath(this.venvDir, platform(), manager.kind)
+    console.error(`[dsh-qboson-ising-solver] Creating environment with ${manager.kind}: ${this.venvDir}`)
 
-    // Repair any partially-created environment atomically enough for the next run.
+    // Recreate the private environment with the selected manager.
     await rm(this.venvDir, { recursive: true, force: true })
 
-    await this.runChecked(
-      [uv, 'venv', '--python', '3.10', this.venvDir],
-      { env, signal, code: 'PYTHON_SETUP_FAILED' },
-    )
-
-    await this.runChecked(
-      [uv, 'pip', 'install', '--python', this.managedPython, this.kaiwuSpec],
-      { env, signal, code: 'KAIWU_INSTALL_FAILED' },
-    )
+    if (manager.kind === 'conda') {
+      await this.runChecked(
+        [manager.executable, 'create', '--yes', '--no-default-packages', '--prefix', this.venvDir, `python=${PYTHON_VERSION}`, 'pip'],
+        { env, signal, code: 'PYTHON_SETUP_FAILED' },
+      )
+      await this.runChecked(
+        [this.managedPython, '-m', 'pip', 'install', '--no-input', '--disable-pip-version-check',
+          ...(this.kaiwuSpec === KAIWU_SPEC ? ['-r', REQUIREMENTS_PATH] : [this.kaiwuSpec])],
+        { env, signal, code: 'KAIWU_INSTALL_FAILED' },
+      )
+    } else {
+      await this.runChecked(
+        [manager.executable, 'venv', '--python', PYTHON_VERSION, this.venvDir],
+        { env, signal, code: 'PYTHON_SETUP_FAILED' },
+      )
+      await this.runChecked(
+        this.kaiwuSpec === KAIWU_SPEC
+          ? [manager.executable, 'pip', 'sync', '--python', this.managedPython, REQUIREMENTS_PATH]
+          : [manager.executable, 'pip', 'install', '--python', this.managedPython, this.kaiwuSpec],
+        { env, signal, code: 'KAIWU_INSTALL_FAILED' },
+      )
+    }
 
     await this.assertCompatiblePython(this.managedPython, signal, true)
 
     await writeFile(join(this.root, 'runtime.json'), `${JSON.stringify({
       schema: RUNTIME_SCHEMA,
-      python: '3.10',
+      python: PYTHON_VERSION,
       kaiwu: this.kaiwuSpec,
-      uv: UV_VERSION,
+      requirements: await this.requirementsFingerprint(),
+      manager: manager.kind,
     }, null, 2)}\n`, 'utf8')
 
     console.error(`[dsh-qboson-ising-solver] Runtime ready: ${this.managedPython}`)
   }
 
-  async ensureUv(signal) {
+  async selectManager(signal) {
+    const uv = await this.findUv(signal)
+    if (uv) return { kind: 'uv', executable: uv }
+    const conda = await this.findConda(signal)
+    if (conda) return { kind: 'conda', executable: conda }
+    return { kind: 'uv', executable: await this.ensureUv(signal) }
+  }
+
+  async findUv(signal) {
     try {
-      return await this.ctx.subprocess.resolveExecutable('uv', process.env, signal)
+      const uv = await this.ctx.subprocess.resolveExecutable('uv', process.env, signal)
+      if (await this.isUsableUv(uv, signal)) return uv
     } catch {
-      // Use a plugin-private uv installation instead of requiring a user-level tool.
+      // Check the plugin-private installation next.
     }
 
-    for (const candidate of privateUvCandidates(this.uvDir)) {
-      if (await exists(candidate)) return candidate
+    const candidates = [
+      ...(platform() === 'darwin' ? macExecutableCandidates('uv') : []),
+      ...privateUvCandidates(this.uvDir),
+    ]
+    for (const candidate of candidates) {
+      if (await exists(candidate) && await this.isUsableUv(candidate, signal)) return candidate
     }
+  }
 
+  async findConda(signal) {
+    const candidates = [optionalString(process.env.CONDA_EXE)]
+    try {
+      candidates.push(await this.ctx.subprocess.resolveExecutable('conda', process.env, signal))
+    } catch {
+      // CONDA_EXE also supports installations initialized by the parent shell.
+    }
+    if (platform() === 'darwin') candidates.push(...macExecutableCandidates('conda'))
+    for (let candidate of candidates.filter(Boolean)) {
+      if (platform() === 'win32' && /\.(bat|cmd)$/i.test(candidate)) {
+        const directory = dirname(candidate)
+        const condaRoot = basename(dirname(directory)).toLowerCase() === 'library'
+          ? resolve(directory, '..', '..')
+          : dirname(directory)
+        candidate = join(condaRoot, 'Scripts', 'conda.exe')
+      }
+      try {
+        const version = await this.runChecked([candidate, '--version'], {
+          env: process.env, signal, code: 'CONDA_VERSION_FAILED',
+        })
+        if (/^conda\s+\d+\./.test(version.trim())) return candidate
+      } catch {
+        // Try the next discovered executable.
+      }
+    }
+  }
+
+  async ensureUv(signal) {
     await mkdir(this.bootstrapDir, { recursive: true })
     await mkdir(this.uvDir, { recursive: true })
 
@@ -242,6 +336,13 @@ export class ManagedKaiwuRuntime {
     throw new IsingSolverError('UV_BOOTSTRAP_FAILED', `uv installer completed but no uv executable was found under ${this.uvDir}`)
   }
 
+  async isUsableUv(candidate, signal) {
+    const version = await this.runChecked([candidate, '--version'], {
+      env: process.env, signal, code: 'UV_VERSION_FAILED',
+    })
+    return /^uv\s+\d+\./.test(version.trim())
+  }
+
   async assertCompatiblePython(python, signal, requireKaiwu) {
     const script = [
       'import sys',
@@ -256,7 +357,7 @@ export class ManagedKaiwuRuntime {
     )
   }
 
-  async runChecked(argv, { env, signal, code }) {
+  async runChecked(argv, { env, signal, code, cwd = this.root }) {
     let executable = argv[0]
     if (!isAbsolute(argv[0]) && !argv[0].includes('/') && !argv[0].includes('\\')) {
       try {
@@ -270,7 +371,7 @@ export class ManagedKaiwuRuntime {
     try {
       handle = this.ctx.subprocess.spawn({
         argv: [executable, ...argv.slice(1)],
-        cwd: this.root,
+        cwd,
         env,
         stdio: { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' },
         graceMs: 5_000,
@@ -296,6 +397,9 @@ export class ManagedKaiwuRuntime {
 
 export const runtimeInternals = {
   UV_VERSION,
+  PYTHON_VERSION,
+  KAIWU_SPEC,
+  REQUIREMENTS_PATH,
   installerUrl,
   privateUvCandidates,
   runtimeEnv,

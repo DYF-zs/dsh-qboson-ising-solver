@@ -23,6 +23,16 @@ export interface KaiwuRuntimeInfo {
   runtime_dir: string
 }
 
+export interface KaiwuRuntimeStatus {
+  environment_status: 'ready' | 'missing' | 'invalid'
+  license_status: 'valid' | 'missing' | 'invalid' | 'not_checked'
+  runtime_dir: string
+  python_executable?: string
+  python_version?: string
+  kaiwu_version?: string
+  message?: string
+}
+
 export class IsingSolverError extends Error {
   readonly code: string
   readonly details?: unknown
@@ -33,6 +43,9 @@ export class IsingSolverService extends Service {
   constructor(ctx: Context)
   /** Optional environment capability supplied by the Kaiwu provider. */
   prepareRuntime?(signal?: AbortSignal): Promise<KaiwuRuntimeInfo>
+  checkRuntime?(signal?: AbortSignal): Promise<KaiwuRuntimeStatus>
+  /** Open License configuration to renew authorization or switch accounts. */
+  configureLicense?(signal?: AbortSignal): Promise<KaiwuRuntimeInfo>
   solve(request: IsingSolveRequest, signal?: AbortSignal): Promise<IsingSolveResult>
 }
 
@@ -56,9 +69,10 @@ export class ManagedKaiwuRuntime {
   constructor(ctx: Context, config?: ManagedKaiwuRuntimeConfig)
   readonly root: string
   readonly managedPython: string
-  resolvePython(signal?: AbortSignal): Promise<string>
+  resolvePython(signal?: AbortSignal, options?: { autoSetup?: boolean }): Promise<string>
+  inspectEnvironment(): Promise<Pick<KaiwuRuntimeStatus, 'environment_status' | 'python_executable'>>
   ensureSetup(signal?: AbortSignal): Promise<void>
 }
 
 export function defaultRuntimeRoot(env?: Record<string, string | undefined>): string
-export function venvPythonPath(venvDir: string, platform?: string): string
+export function venvPythonPath(venvDir: string, platform?: string, manager?: 'uv' | 'conda'): string

@@ -1,4 +1,31 @@
+import { extname } from 'node:path'
 import { IsingSolverError } from './errors.js'
+
+/** Read a dense numeric Ising matrix from CSV or JSON. */
+export function parseIsingMatrixFile(text, path) {
+  const content = text.replace(/^\uFEFF/, '').trim()
+  let matrix
+  if (extname(path).toLowerCase() === '.csv') {
+    matrix = content.split(/\r\n|\n|\r/).map((line, row) => line.split(',').map((cell, column) => {
+      let value = cell.trim()
+      if (value.startsWith('"') && value.endsWith('"')) value = value.slice(1, -1).trim()
+      if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(value)) {
+        throw new IsingSolverError('INVALID_MATRIX', `CSV row ${row + 1}, column ${column + 1} must contain a number; use a matrix without headers or row indexes`)
+      }
+      return Number(value)
+    }))
+  } else {
+    let parsed
+    try {
+      parsed = JSON.parse(content)
+    } catch {
+      throw new IsingSolverError('INVALID_MATRIX', 'Matrix file must contain valid JSON, or use a .csv file for a comma-separated matrix')
+    }
+    matrix = Array.isArray(parsed) ? parsed : parsed?.ising_matrix
+  }
+  validateIsingMatrix(matrix)
+  return matrix
+}
 
 /** Validate matrix shape and numeric values for direct solver input. */
 export function validateIsingMatrix(matrix) {

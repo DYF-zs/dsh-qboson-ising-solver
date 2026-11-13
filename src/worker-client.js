@@ -67,7 +67,7 @@ export class KaiwuWorkerClient {
     const nextFingerprint = envFingerprint(env)
     if (this.handle && this.workerEnvFingerprint === nextFingerprint) return
     if (this.handle && this.workerEnvFingerprint !== nextFingerprint) {
-      await this.stop(new IsingSolverError('WORKER_RESTARTED', 'Kaiwu credentials or worker environment changed'))
+      await this.stop(new IsingSolverError('WORKER_RESTARTED', 'Kaiwu worker environment changed'))
     }
 
     if (this.stopPromise) await this.stopPromise
