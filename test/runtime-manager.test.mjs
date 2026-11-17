@@ -205,3 +205,64 @@ test('uv bootstrap is pinned', () => {
   assert.match(runtimeInternals.installerUrl('darwin'), /\/0\.13\.8\/install\.sh$/)
   assert.equal(path.basename(runtimeInternals.privateUvCandidates('/runtime/uv', 'darwin')[0]), 'uv')
 })
+
+test('dependency updates reuse the environment and preserve its License through SDK installation', async (t) => {
+  for (const kind of ['uv', 'conda']) {
+    for (const fails of [false, true]) {
+      await t.test(`${kind}, installation ${fails ? 'fails' : 'succeeds'}`, async (t) => {
+        const root = await mkdtemp(path.join(tmpdir(), 'qboson-runtime-update-'))
+        t.after(() => rm(root, { recursive: true, force: true }))
+        const runtime = new ManagedKaiwuRuntime({}, { runtimeDir: root })
+        const python = venvPythonPath(runtime.venvDir, process.platform, kind)
+        const license = path.join(runtime.venvDir,
+          ...(process.platform === 'win32' ? ['Lib'] : ['lib', 'python3.10']),
+          'site-packages', 'kaiwu', 'license.lic')
+        await mkdir(path.dirname(python), { recursive: true })
+        await mkdir(path.dirname(license), { recursive: true })
+        await writeFile(python, 'existing interpreter')
+        await writeFile(license, 'existing license fixture')
+        const metadata = { schema: 2, python: runtimeInternals.PYTHON_VERSION, kaiwu: 'kaiwu==1.4.2', manager: kind, requirements: 'previous' }
+        await writeFile(path.join(root, 'runtime.json'), JSON.stringify(metadata))
+        runtime.selectManager = async () => ({ kind, executable: `installed-${kind}` })
+        runtime.assertCompatiblePython = async () => {}
+        let installations = 0
+        runtime.runChecked = async (argv) => {
+          assert.ok(argv.includes('pip'))
+          installations++
+          await rm(license)
+          if (fails) throw new Error('SDK installation failed')
+        }
+        if (fails) await assert.rejects(runtime.setup(), /SDK installation failed/)
+        else await runtime.setup()
+        assert.equal(installations, 1)
+        assert.equal(await readFile(python, 'utf8'), 'existing interpreter')
+        assert.equal(await readFile(license, 'utf8'), 'existing license fixture')
+        const current = JSON.parse(await readFile(path.join(root, 'runtime.json'), 'utf8'))
+        assert.equal(current.requirements, fails ? metadata.requirements : await runtime.requirementsFingerprint())
+      })
+    }
+  }
+})
+
+test('a Python version change recreates the managed environment', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'qboson-python-update-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const runtime = new ManagedKaiwuRuntime({}, { runtimeDir: root })
+  await mkdir(path.dirname(runtime.managedPython), { recursive: true })
+  await writeFile(runtime.managedPython, 'previous interpreter')
+  await writeFile(path.join(root, 'runtime.json'), JSON.stringify({
+    schema: 2, python: '3.10.21', kaiwu: runtimeInternals.KAIWU_SPEC, manager: 'uv', requirements: 'previous',
+  }))
+  runtime.selectManager = async () => ({ kind: 'uv', executable: 'installed-uv' })
+  runtime.assertCompatiblePython = async () => {}
+  runtime.runChecked = async (argv) => {
+    if (argv.includes('venv')) {
+      await assert.rejects(stat(runtime.managedPython), { code: 'ENOENT' })
+      await mkdir(path.dirname(runtime.managedPython), { recursive: true })
+      await writeFile(runtime.managedPython, 'updated interpreter')
+    }
+  }
+  await runtime.setup()
+  assert.equal(await readFile(runtime.managedPython, 'utf8'), 'updated interpreter')
+  assert.equal(JSON.parse(await readFile(path.join(root, 'runtime.json'), 'utf8')).python, runtimeInternals.PYTHON_VERSION)
+})

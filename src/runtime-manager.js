@@ -120,6 +120,7 @@ export class ManagedKaiwuRuntime {
         await this.assertCompatiblePython(this.managedPython, signal, true)
         return this.managedPython
       } catch {
+        signal?.throwIfAborted()
         // A partial or stale runtime is repaired below.
       }
     }
@@ -185,32 +186,55 @@ export class ManagedKaiwuRuntime {
     const manager = await this.selectManager(signal)
     const env = runtimeEnv(this.root)
     this.managedPython = venvPythonPath(this.venvDir, platform(), manager.kind)
-    console.error(`[dsh-qboson-ising-solver] Creating environment with ${manager.kind}: ${this.venvDir}`)
+    const previous = await readFile(join(this.root, 'runtime.json'), 'utf8').then(JSON.parse).catch(() => undefined)
+    let reuse = previous?.schema === RUNTIME_SCHEMA && previous.python === PYTHON_VERSION
+      && previous.manager === manager.kind && await exists(this.managedPython)
+      && (previous.kaiwu !== this.kaiwuSpec || previous.requirements !== await this.requirementsFingerprint())
+    if (reuse) {
+      try {
+        await this.assertCompatiblePython(this.managedPython, signal, false)
+      } catch {
+        signal?.throwIfAborted()
+        reuse = false
+      }
+    }
+    const operation = reuse ? 'Updating dependencies in' : `Creating environment with ${manager.kind}:`
+    console.error(`[dsh-qboson-ising-solver] ${operation} ${this.venvDir}`)
 
-    // Recreate the private environment with the selected manager.
-    await rm(this.venvDir, { recursive: true, force: true })
+    if (!reuse) await rm(this.venvDir, { recursive: true, force: true })
 
-    if (manager.kind === 'conda') {
+    if (!reuse && manager.kind === 'conda') {
       await this.runChecked(
         [manager.executable, 'create', '--yes', '--no-default-packages', '--prefix', this.venvDir, `python=${PYTHON_VERSION}`, 'pip'],
         { env, signal, code: 'PYTHON_SETUP_FAILED' },
       )
-      await this.runChecked(
-        [this.managedPython, '-m', 'pip', 'install', '--no-input', '--disable-pip-version-check',
-          ...(this.kaiwuSpec === KAIWU_SPEC ? ['-r', REQUIREMENTS_PATH] : [this.kaiwuSpec])],
-        { env, signal, code: 'KAIWU_INSTALL_FAILED' },
-      )
-    } else {
+    } else if (!reuse) {
       await this.runChecked(
         [manager.executable, 'venv', '--python', PYTHON_VERSION, this.venvDir],
         { env, signal, code: 'PYTHON_SETUP_FAILED' },
       )
-      await this.runChecked(
-        this.kaiwuSpec === KAIWU_SPEC
+    }
+
+    const licensePath = join(this.venvDir,
+      ...(platform() === 'win32' ? ['Lib'] : ['lib', `python${PYTHON_VERSION.split('.').slice(0, 2).join('.')}`]),
+      'site-packages', 'kaiwu', 'license.lic')
+    const license = reuse ? await readFile(licensePath).catch((error) => {
+      if (error.code !== 'ENOENT') throw error
+    }) : undefined
+    try {
+      const argv = manager.kind === 'conda'
+        ? [this.managedPython, '-m', 'pip', 'install', '--no-input', '--disable-pip-version-check',
+          ...(this.kaiwuSpec === KAIWU_SPEC ? ['-r', REQUIREMENTS_PATH] : [this.kaiwuSpec])]
+        : this.kaiwuSpec === KAIWU_SPEC
           ? [manager.executable, 'pip', 'sync', '--python', this.managedPython, REQUIREMENTS_PATH]
-          : [manager.executable, 'pip', 'install', '--python', this.managedPython, this.kaiwuSpec],
-        { env, signal, code: 'KAIWU_INSTALL_FAILED' },
-      )
+          : [manager.executable, 'pip', 'install', '--python', this.managedPython, this.kaiwuSpec]
+      await this.runChecked(argv, { env, signal, code: 'KAIWU_INSTALL_FAILED' })
+    } finally {
+      if (license) {
+        // Preserve the SDK License across package replacement and failed installs.
+        await mkdir(dirname(licensePath), { recursive: true })
+        await writeFile(licensePath, license, { mode: 0o600 })
+      }
     }
 
     await this.assertCompatiblePython(this.managedPython, signal, true)
@@ -358,6 +382,7 @@ export class ManagedKaiwuRuntime {
   }
 
   async runChecked(argv, { env, signal, code, cwd = this.root }) {
+    signal?.throwIfAborted()
     let executable = argv[0]
     if (!isAbsolute(argv[0]) && !argv[0].includes('/') && !argv[0].includes('\\')) {
       try {
@@ -367,6 +392,7 @@ export class ManagedKaiwuRuntime {
       }
     }
 
+    signal?.throwIfAborted()
     let handle
     try {
       handle = this.ctx.subprocess.spawn({
@@ -384,6 +410,7 @@ export class ManagedKaiwuRuntime {
     signal?.addEventListener('abort', onAbort, { once: true })
     try {
       const { outcome, stdout, stderr } = await collectProcess(handle)
+      signal?.throwIfAborted()
       if (outcome?.exitCode !== 0) {
         const detail = (stderr || stdout).trim().slice(-4_000)
         throw new IsingSolverError(code, `${argv[0]} exited with code ${String(outcome?.exitCode)}${detail ? `: ${detail}` : ''}`)

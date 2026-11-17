@@ -15,6 +15,35 @@ spec.loader.exec_module(worker)
 
 
 class WorkerCoreTests(unittest.TestCase):
+    def test_solver_worker_requires_authorization_without_opening_a_dialog(self):
+        kw = types.SimpleNamespace()
+        cim = types.SimpleNamespace(CIMOptimizer=object, TaskMode=object)
+        with patch.dict('sys.modules', {'kaiwu': kw, 'kaiwu.cim': cim}), patch.object(worker, '_require_python_310'), patch.object(worker, 'license_available', return_value=False), patch.object(worker, 'ensure_authorized') as authorize:
+            with self.assertRaises(worker.WorkerError) as error:
+                worker.KaiwuRuntime()
+            self.assertEqual(error.exception.code, 'LICENSE_ERROR')
+            authorize.assert_not_called()
+
+    def test_solver_uses_the_supplied_task_name_and_retains_it_on_failure(self):
+        runtime = object.__new__(worker.KaiwuRuntime)
+        runtime.task_name_prefix = 'ising_dsh'
+        runtime.interval = 1
+        runtime.project_no = None
+        runtime.TaskMode = types.SimpleNamespace(OPTIMIZATION='fixture')
+        optimizer = types.SimpleNamespace(
+            solve=lambda *args, **kwargs: np.array([[1, -1]]),
+            get_hamiltonian=lambda: np.array([-2]),
+        )
+        task_name = 'ising_dsh_fixture'
+        with patch.object(runtime, 'CIMOptimizer', create=True, return_value=optimizer) as factory:
+            result = runtime.solve([[0, -1], [-1, 0]], task_name)
+            self.assertEqual(factory.call_args.kwargs['task_name'], task_name)
+            self.assertEqual(result['task_name'], task_name)
+        with patch.object(runtime, 'CIMOptimizer', create=True, side_effect=RuntimeError('Fixture failure')):
+            with self.assertRaises(worker.WorkerError) as error:
+                runtime.solve([[0, -1], [-1, 0]], task_name)
+            self.assertEqual(error.exception.details['task_name'], task_name)
+
     def test_runtime_check_returns_license_states_without_authorization(self):
         for present, valid, expected in [(False, False, 'missing'), (True, False, 'invalid'), (True, True, 'valid')]:
             report = dict(python_310=True, python_version='3.10.22', kaiwu='1.4.3', license_present=present, license_valid=valid)

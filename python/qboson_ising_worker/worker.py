@@ -194,7 +194,8 @@ class KaiwuRuntime:
         self.CIMOptimizer = CIMOptimizer
         self.TaskMode = TaskMode
 
-        _authorize_kaiwu(kw)
+        if not license_available(kw):
+            raise WorkerError("LICENSE_ERROR", "Kaiwu License 无效，请调用 prepare_kaiwu_runtime 完成授权。")
 
         checkpoint_dir = Path(os.path.expanduser(os.getenv(
             "KAIWU_CHECKPOINT_DIR",
@@ -216,10 +217,10 @@ class KaiwuRuntime:
         self.project_no = os.getenv("KAIWU_PROJECT_NO") or None
         self.task_name_prefix = os.getenv("KAIWU_TASK_NAME_PREFIX", "ising_dsh").strip() or "ising_dsh"
 
-    def solve(self, matrix_value: Any) -> dict[str, Any]:
+    def solve(self, matrix_value: Any, task_name: str | None = None) -> dict[str, Any]:
         matrix = _validate_matrix(matrix_value)
         dimension = int(matrix.shape[0])
-        task_name = f"{self.task_name_prefix}_{uuid.uuid4().hex[:12]}"
+        task_name = task_name or f"{self.task_name_prefix}_{uuid.uuid4().hex[:12]}"
 
         kwargs: dict[str, Any] = {
             "task_name": task_name,
@@ -242,7 +243,7 @@ class KaiwuRuntime:
             hamiltonians = optimizer.get_hamiltonian()
         except Exception as exc:
             _LOGGER.exception("solve failed dimension=%d task_name=%s", dimension, task_name)
-            raise WorkerError("CIM_TASK_FAILED", f"Kaiwu CIM solve failed: {exc}") from exc
+            raise WorkerError("CIM_TASK_FAILED", f"Kaiwu CIM solve failed: {exc}", {"task_name": task_name}) from exc
 
         solver_time_us = (time.perf_counter_ns() - started_ns) / 1_000.0
         normalized = _normalize_solver_result(solutions, hamiltonians, dimension)
@@ -333,7 +334,7 @@ def _serve() -> int:
             op = request.get("op")
             if op != "solve":
                 raise WorkerError("PROTOCOL_ERROR", f"unsupported operation: {op!r}")
-            result = runtime.solve(request.get("ising_matrix"))
+            result = runtime.solve(request.get("ising_matrix"), request.get("task_name"))
             _write_json({"id": request_id, "ok": True, "result": result})
         except Exception as exc:
             _LOGGER.exception("request failed id=%s", request_id)

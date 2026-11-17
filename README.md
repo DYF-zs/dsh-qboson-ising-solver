@@ -6,11 +6,12 @@
   <a href="https://platform.qboson.com/"><img alt="专用量子计算云平台" src="https://img.shields.io/badge/SPQC-%E9%87%8F%E5%AD%90%E4%BA%91%E5%B9%B3%E5%8F%B0-0F766E?style=flat"></a>
   <a href="https://github.com/qboson/kaiwu-coding-skill"><img alt="Kaiwu Coding Skill" src="https://img.shields.io/badge/GitHub-Kaiwu_Coding_Skill-181717?style=flat&amp;logo=github&amp;logoColor=white"></a>
   <a href="https://github.com/qboson/kpp-coding-skill"><img alt="KPP Coding Skill" src="https://img.shields.io/badge/GitHub-KPP_Coding_Skill-181717?style=flat&amp;logo=github&amp;logoColor=white"></a>
+  <a href="https://www.npmjs.com/package/@deepseek-ai/dsh?activeTab=versions"><img alt="Supported DSH versions: 0.2.0-rc.2+" src="https://img.shields.io/badge/DSH-0.2.0--rc.2%2B-4d6bfe" /></a>
 </p>
 
-`dsh-qboson-ising-solver` 是面向 DeepSeek Harness 的玻色量子（QBoson）组合优化插件，基于 Kaiwu SDK，让 AI 智能体能够根据业务需求构建 QUBO / Ising 模型，调用 QBoson SPQC 真机求解，并还原、验证和保存业务结果。
+`dsh-qboson-ising-solver` 是面向 DeepSeek Harness 的玻色量子（QBoson）建模与求解插件，支持基于 Kaiwu SDK 构建 QUBO / Ising 模型、调用 QBoson SPQC 真机并处理业务结果，以及使用 Kaiwu PyTorch Plugin（KPP）构建、训练和验证能量模型。
 
-- **业务问题建模**：根据业务目标、数据和约束，生成并运行 Kaiwu 建模代码，支持选址、调度、路径规划、覆盖等组合优化问题。
+- **业务问题建模**：根据业务目标、数据和约束，生成并运行 Kaiwu 建模代码，支持选址、调度、路径规划、覆盖等组合优化问题，以及基于 KPP 的能量模型、离散生成和 PyTorch 特征选择。
 - **环境与授权**：自动准备独立的 Python / Kaiwu 运行环境，支持检查环境与 License 状态，并通过授权窗口完成授权。
 - **真机求解**：调用 QBoson SPQC 真机，支持直接输入 Ising Matrix 或从 CSV / JSON 文件读取矩阵，返回候选自旋解、Hamiltonian 和求解耗时。
 - **结果处理**：将自旋解还原为业务方案，验证约束、计算目标值并筛选最佳可行方案；保存建模代码、矩阵、变量映射、原始结果和业务方案，记录任务标识，便于复查与复现。
@@ -75,38 +76,33 @@ macOS 使用对应的绝对目录，例如 `link:/Users/<用户名>/dsh-qboson-i
 向 Agent 描述目标、数据、全部约束，以及是否要求真机求解。例如：
 
 ```text
-请解决带权顶点覆盖问题：顶点成本为 [3,2,4]，边为 [(0,1),(1,2)]。
-请生成 Kaiwu 建模代码，保存矩阵和变量映射，用 QBoson 真机求解，
-再从真实候选解码，检查每条边是否被覆盖，报告顶点编号与原业务成本。
+请用 QBoson 真机求解带权顶点覆盖问题：
+顶点成本为 [3,2,4]，边为 [(0,1),(1,2)]。
+给出选中的顶点和总成本，并验证每条边都被覆盖。
 ```
 
-[可执行顶点覆盖示例](examples/kaiwu-workflow.py)提供 `build <任务目录>` 与 `decode <任务目录>` 两个入口，使用 `prepare_kaiwu_runtime` 返回的解释器执行。真机提交通过 `solve_ising_file` 完成。业务结果从返回的可行候选中按原业务成本选优。
+Agent 根据需求完成建模与求解，输出业务方案、约束检查和目标值，并保存相关代码与结果。[顶点覆盖示例](examples/kaiwu-workflow.py)可供参考。
 
-### 从文件求解已有矩阵
+### KPP 能量模型与训练
 
-向 Agent 提供矩阵 CSV 或 JSON 文件，或调用 `solve_ising_file`：
+向 Agent 描述数据、模型用途和验收指标，可使用 KPP 构建 BM / RBM、DBN、QVAE、QDiffusion，或为 PyTorch 模型做特征选择。例如：
 
-```json
-{
-  "matrix_path": "C:/workspace/cover/matrix.csv",
-  "result_path": "C:/workspace/cover/raw-result.json"
-}
+```text
+请使用 KPP 为这份二元数据训练 RBM，检查采样、损失与参数更新，
+保存模型和配置，并在新进程中加载模型验证生成结果。
 ```
 
-两个路径均需为绝对路径，输出目录需要已存在，结果文件需要尚不存在。
+Agent 按任务需要检查和准备 KPP 运行环境，生成训练代码，保存模型并验证效果。需要真机采样时，由插件完成求解；出现授权窗口时按提示填写即可。
 
-CSV 为 UTF-8 编码的逗号分隔数值矩阵，不带表头和行索引；JSON 支持二维数组或 `{"ising_matrix": [...]}`。参见 [CSV 示例](examples/ising-matrix-10.csv)和 [JSON 示例](examples/ising-matrix-10.json)。输入均为 Ising 矩阵，QUBO 矩阵需先转换。
+### 求解已有矩阵
 
-工具保存全部原始候选、Hamiltonian、求解耗时、任务标识与矩阵 SHA-256，并返回摘要。`saved=false` 表示求解已完成但保存失败，此时保存返回的 `raw_result_json`，不要重复提交。
+提供 Ising 矩阵文件，或在对话中直接粘贴矩阵，并说明要求。例如：
 
-### 直接输入已有矩阵
-
-调用 `solve_ising`，例如：
-
-```json
-{"ising_matrix": [[0, -1], [-1, 0]]}
+```text
+请用 QBoson 真机求解 C:/work/matrix.csv 中的 Ising 矩阵，
+保存完整结果，并报告最佳候选、能量、求解耗时和任务名。
 ```
 
-矩阵需为非空、有限数值的方阵。返回 `dimension`、`solutions`、`solver_time_us` 和 `task_name`；每个候选包含完整的 ±1 自旋及 `hamiltonian`，按 Hamiltonian 升序排列。已有矩阵缺少业务变量映射时，交付原始求解结果。
+支持 CSV / JSON 文件，格式可参考 [CSV 示例](examples/ising-matrix-10.csv)和 [JSON 示例](examples/ising-matrix-10.json)。直接提供矩阵时，例如 `[[0,-1],[-1,0]]`。如需还原业务方案，请同时提供变量含义或映射。
 
-求解超时或取消会结束本地 worker，云端任务状态需核对平台；本插件不提供云端任务续查或取消工具，状态不明时应避免重复提交。
+求解超时或取消后，可按任务名到平台核对状态。云端任务可能仍在运行，确认状态后再决定是否重新提交。

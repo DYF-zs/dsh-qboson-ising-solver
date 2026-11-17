@@ -12,6 +12,7 @@ import * as nativeExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { LocalFileSystem } from '@deepseek-ai/dsh-fs-local'
 import * as tools from '../src/tool.js'
 import KaiwuProvider from '../src/provider-kaiwu.js'
+import { IsingSolverError } from '../src/errors.js'
 
 const matrix = [[0, -1], [-1, 0]]
 const result = {
@@ -229,6 +230,50 @@ test('post-solve save failure returns recoverable data without repeating the sol
   assert.equal(state.calls.length, 1)
 })
 
+test('DSH tool errors include the task name for platform lookup', async (t) => {
+  const state = await setup(t)
+  const providerCtx = new Context()
+  t.after(() => providerCtx.fiber.dispose())
+  const provider = new KaiwuProvider(providerCtx)
+  let taskName
+  provider.workerClient = async () => ({
+    async request(payload) {
+      taskName = payload.task_name
+      throw new IsingSolverError('TIMEOUT', 'Fixture task timed out')
+    },
+    async dispose() {},
+  })
+  state.solver.solve = provider.solve.bind(provider)
+  for (const [name, args] of [
+    ['solve_ising', { ising_matrix: matrix }],
+    ['solve_ising_file', { matrix_path: state.matrixPath, result_path: state.resultPath }],
+  ]) {
+    const outcome = await state.invoke(name, args)
+    assert.equal(outcome.isError, true)
+    assert.match(taskName, /^ising_dsh_[a-f0-9]{12}$/)
+    assert.ok(JSON.stringify(outcome).includes(taskName))
+  }
+  let started
+  const running = new Promise((resolve) => { started = resolve })
+  provider.workerClient = async () => ({
+    request(payload, signal) {
+      taskName = payload.task_name
+      started()
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+      })
+    },
+    async dispose() {},
+  })
+  const controller = new AbortController()
+  const pending = state.invoke('solve_ising', { ising_matrix: matrix }, controller.signal)
+  await running
+  controller.abort(new Error('Fixture caller cancelled'))
+  const outcome = await pending
+  assert.equal(outcome.isError, true)
+  assert.ok(JSON.stringify(outcome).includes(taskName))
+})
+
 test('runtime tool returns interpreter facts and pre-aborted calls never submit', async (t) => {
   const state = await setup(t)
   const outcome = await state.invoke('prepare_kaiwu_runtime', {})
@@ -270,18 +315,82 @@ test('preparation reuses a ready environment and valid License', async (t) => {
   assert.deepEqual(await provider.prepareRuntime(), info)
 })
 
-test('preparation refreshes an idle worker after renewing an invalid License', async (t) => {
+test('preparation renews an invalid License without starting a solve worker', async (t) => {
   const ctx = new Context()
   t.after(() => ctx.fiber.dispose())
   const provider = new KaiwuProvider(ctx)
-  let disposed = false
-  provider.client = { async dispose() { disposed = true } }
   provider.checkRuntime = async () => ({ environment_status: 'ready', license_status: 'invalid' })
   provider.runtime.resolvePython = async () => '/test/python'
   provider.runtime.runChecked = async () => JSON.stringify({ python_executable: '/test/python', python_version: '3.10.22', kaiwu_version: '1.4.3' })
   assert.equal((await provider.prepareRuntime()).python_executable, '/test/python')
-  assert.equal(disposed, true)
-  assert.equal(provider.client, undefined)
+  assert.equal(provider.clients.size, 0)
+})
+
+test('concurrent preparation shares authorization and cancelling one waiter preserves the others', async (t) => {
+  const ctx = new Context()
+  t.after(() => ctx.fiber.dispose())
+  const provider = new KaiwuProvider(ctx)
+  const info = { python_executable: '/test/python', python_version: '3.10.22', kaiwu_version: '1.4.3' }
+  provider.checkRuntime = async () => ({ environment_status: 'ready', license_status: 'missing' })
+  provider.runtime.resolvePython = async () => info.python_executable
+  let finish, authorizationSignal, opened = 0
+  provider.runtime.runChecked = async (_argv, { signal }) => {
+    opened++
+    authorizationSignal = signal
+    return new Promise((resolve) => { finish = () => resolve(JSON.stringify(info)) })
+  }
+  const controller = new AbortController()
+  const first = provider.prepareRuntime(controller.signal)
+  const cancelled = assert.rejects(first, /cancelled/)
+  const second = provider.prepareRuntime()
+  await new Promise(setImmediate)
+  assert.equal(opened, 1)
+  await assert.rejects(provider.configureLicense(), { code: 'KAIWU_RUNTIME_BUSY' })
+  controller.abort(new Error('First waiter cancelled'))
+  await cancelled
+  assert.equal(authorizationSignal.aborted, false)
+  finish()
+  assert.equal((await second).python_executable, info.python_executable)
+  assert.equal(provider.authorizationInProgress, false)
+  assert.equal(provider.preparation, undefined)
+})
+
+test('shared authorization failure releases preparation for a successful retry', async (t) => {
+  const ctx = new Context()
+  t.after(() => ctx.fiber.dispose())
+  const provider = new KaiwuProvider(ctx)
+  provider.checkRuntime = async () => ({ environment_status: 'ready', license_status: 'invalid' })
+  provider.runtime.resolvePython = async () => '/test/python'
+  provider.runtime.runChecked = async () => { throw new Error('Authorization cancelled') }
+  const results = await Promise.allSettled([provider.prepareRuntime(), provider.prepareRuntime()])
+  assert.ok(results.every((result) => result.status === 'rejected'))
+  provider.runtime.runChecked = async () => JSON.stringify({ python_executable: '/test/python' })
+  assert.equal((await provider.prepareRuntime()).python_executable, '/test/python')
+})
+
+test('cancelling all preparation callers stops the shared authorization', async (t) => {
+  const ctx = new Context()
+  t.after(() => ctx.fiber.dispose())
+  const provider = new KaiwuProvider(ctx)
+  provider.checkRuntime = async () => ({ environment_status: 'ready', license_status: 'missing' })
+  provider.runtime.resolvePython = async () => '/test/python'
+  let authorizationSignal
+  provider.runtime.runChecked = async (_argv, { signal }) => {
+    authorizationSignal = signal
+    return new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+    })
+  }
+  const controller = new AbortController()
+  const preparation = provider.prepareRuntime(controller.signal)
+  const cancelled = assert.rejects(preparation, /cancelled/)
+  await new Promise(setImmediate)
+  controller.abort(new Error('Caller cancelled'))
+  await cancelled
+  await new Promise(setImmediate)
+  assert.equal(authorizationSignal.aborted, true)
+  assert.equal(provider.preparation, undefined)
+  assert.equal(provider.authorizationInProgress, false)
 })
 
 test('License configuration waits for active solving to finish', async (t) => {
@@ -289,7 +398,7 @@ test('License configuration waits for active solving to finish', async (t) => {
   t.after(() => ctx.fiber.dispose())
   const provider = new KaiwuProvider(ctx)
   let finish
-  provider.workerClient = async () => ({ request: () => new Promise((resolve) => { finish = resolve }) })
+  provider.workerClient = async () => ({ request: () => new Promise((resolve) => { finish = resolve }), async dispose() {} })
   const solving = provider.solve({ isingMatrix: matrix })
   await new Promise(setImmediate)
   await assert.rejects(provider.configureLicense(), { code: 'KAIWU_RUNTIME_BUSY' })
@@ -299,6 +408,74 @@ test('License configuration waits for active solving to finish', async (t) => {
   provider.runtime.resolvePython = async () => '/test/python'
   provider.runtime.runChecked = async () => JSON.stringify({ python_executable: '/test/python' })
   assert.equal((await provider.configureLicense()).python_executable, '/test/python')
+})
+
+test('concurrent solves complete independently and dispose their workers', async (t) => {
+  const ctx = new Context()
+  t.after(() => ctx.fiber.dispose())
+  const provider = new KaiwuProvider(ctx)
+  const workers = []
+  provider.workerClient = async () => {
+    const worker = {
+      request: () => new Promise((resolve) => { worker.finish = resolve }),
+      async dispose() { worker.disposed = true },
+    }
+    workers.push(worker)
+    provider.clients.add(worker)
+    return worker
+  }
+  const first = provider.solve({ isingMatrix: matrix })
+  const second = provider.solve({ isingMatrix: matrix })
+  await new Promise(setImmediate)
+  assert.equal(provider.activeSolves, 2)
+  workers[1].finish({ ...result, task_name: 'second' })
+  assert.equal((await second).task_name, 'second')
+  assert.equal(workers[1].disposed, true)
+  assert.equal(workers[0].disposed, undefined)
+  assert.equal(provider.clients.size, 1)
+  workers[0].finish(result)
+  assert.equal((await first).task_name, result.task_name)
+  assert.equal(workers[0].disposed, true)
+  assert.equal(provider.activeSolves, 0)
+  assert.equal(provider.clients.size, 0)
+})
+
+test('failed solving disposes its worker and releases the active solve count', async (t) => {
+  const ctx = new Context()
+  t.after(() => ctx.fiber.dispose())
+  const provider = new KaiwuProvider(ctx)
+  let disposed = false
+  const worker = {
+    async request() { throw new Error('Solver failed') },
+    async dispose() { disposed = true },
+  }
+  provider.clients.add(worker)
+  provider.workerClient = async () => worker
+  await assert.rejects(provider.solve({ isingMatrix: matrix }), /Solver failed/)
+  assert.equal(disposed, true)
+  assert.equal(provider.clients.size, 0)
+  assert.equal(provider.activeSolves, 0)
+})
+
+test('cancelling the active solve releases the worker for the next request', async (t) => {
+  const ctx = new Context()
+  t.after(() => ctx.fiber.dispose())
+  const provider = new KaiwuProvider(ctx)
+  provider.workerClient = async () => ({
+    async dispose() {},
+    request: (_payload, signal) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+    }),
+  })
+  const controller = new AbortController()
+  const first = provider.solve({ isingMatrix: matrix }, controller.signal)
+  const rejected = assert.rejects(first, /Cancelled active solve/)
+  await new Promise(setImmediate)
+  controller.abort(new Error('Cancelled active solve'))
+  await rejected
+  assert.equal(provider.activeSolves, 0)
+  provider.workerClient = async () => ({ request: async () => result, async dispose() {} })
+  assert.equal((await provider.solve({ isingMatrix: matrix })).task_name, result.task_name)
 })
 
 test('authorization excludes new solves and releases the environment after cancellation', async (t) => {
@@ -312,17 +489,14 @@ test('authorization excludes new solves and releases the environment after cance
   await assert.rejects(provider.configureLicense(), { code: 'KAIWU_RUNTIME_BUSY' })
   rejectAuthorization(new Error('Authorization cancelled'))
   await assert.rejects(configuring, /Authorization cancelled/)
-  provider.workerClient = async () => ({ request: async () => result })
+  provider.workerClient = async () => ({ request: async () => result, async dispose() {} })
   assert.equal((await provider.solve({ isingMatrix: matrix })).task_name, result.task_name)
 })
 
-test('renewing a License uses the prepared environment and refreshes the worker after success', async (t) => {
+test('renewing a License uses the prepared environment without starting a solve worker', async (t) => {
   const ctx = new Context()
   t.after(() => ctx.fiber.dispose())
   const provider = new KaiwuProvider(ctx)
-  let disposed = false
-  provider.client = { async dispose() { disposed = true } }
-  provider.clientPython = '/test/python'
   provider.runtime.resolvePython = async (_signal, options) => {
     assert.equal(options.autoSetup, false)
     return '/test/python'
@@ -332,23 +506,18 @@ test('renewing a License uses the prepared environment and refreshes the worker 
     return JSON.stringify({ python_executable: '/test/python', python_version: '3.10.22', kaiwu_version: '1.4.3' })
   }
   assert.equal((await provider.configureLicense()).python_executable, '/test/python')
-  assert.equal(disposed, true)
-  assert.equal(provider.client, undefined)
-  assert.equal(provider.clientPython, undefined)
+  assert.equal(provider.clients.size, 0)
 })
 
-test('cancelled License configuration keeps the existing worker available', async (t) => {
+test('solving is available after cancelled License configuration', async (t) => {
   const ctx = new Context()
   t.after(() => ctx.fiber.dispose())
   const provider = new KaiwuProvider(ctx)
-  let disposed = false
-  const client = { async dispose() { disposed = true } }
-  provider.client = client
   provider.runtime.resolvePython = async () => '/test/python'
   provider.runtime.runChecked = async () => { throw new Error('Authorization cancelled') }
   await assert.rejects(provider.configureLicense(), /Authorization cancelled/)
-  assert.equal(disposed, false)
-  assert.equal(provider.client, client)
+  provider.workerClient = async () => ({ request: async () => result, async dispose() {} })
+  assert.equal((await provider.solve({ isingMatrix: matrix })).task_name, result.task_name)
 })
 
 test('Kaiwu runtime preparation does not resolve credentials or start a solver', async (t) => {
@@ -369,7 +538,7 @@ test('Kaiwu runtime preparation does not resolve credentials or start a solver',
   const info = await provider.prepareRuntime(new AbortController().signal)
   assert.equal(info.python_executable, '/test/python')
   assert.equal(info.kaiwu_version, '1.4.1')
-  assert.equal(provider.client, undefined)
+  assert.equal(provider.clients.size, 0)
 })
 
 test('runtime preparation fails before returning an interpreter when authorization is cancelled', async (t) => {
@@ -380,7 +549,7 @@ test('runtime preparation fails before returning an interpreter when authorizati
   provider.runtime.resolvePython = async () => '/test/python'
   provider.runtime.runChecked = async () => { throw new Error('Authorization cancelled') }
   await assert.rejects(provider.prepareRuntime(), /Authorization cancelled/)
-  assert.equal(provider.client, undefined)
+  assert.equal(provider.clients.size, 0)
 })
 
 test('all tools present informative pending-state cards while calls run', async (t) => {

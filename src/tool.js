@@ -59,7 +59,7 @@ export function apply(ctx) {
       kind: 'execute',
       content: [{
         type: 'text',
-        text: '正在云端真机求解并等待候选解。首次使用会先自动准备 Python 3.10 / Kaiwu 运行环境（下载依赖可能需要几分钟），随后可能弹出授权窗口；已就绪的环境则直接求解，通常数十秒内完成。',
+        text: '将提交真机并等待候选结果，耗时取决于云端排队、计算和结果回传。首次使用会先自动准备 Python 3.10 / Kaiwu 运行环境，必要时弹出授权窗口。',
       }],
     }),
     async execute(args, exec) {

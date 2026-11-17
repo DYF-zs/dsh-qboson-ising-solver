@@ -1,11 +1,12 @@
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { randomUUID } from 'node:crypto'
 import { IsingSolverService } from './service.js'
 import { validateIsingMatrix } from './matrix.js'
 import { validateAndNormalizeResult } from './result.js'
 import { KaiwuWorkerClient } from './worker-client.js'
 import { ManagedKaiwuRuntime } from './runtime-manager.js'
-import { IsingSolverError } from './errors.js'
+import { IsingSolverError, errorMessage } from './errors.js'
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const DEFAULT_WORKER_PATH = resolve(PACKAGE_ROOT, 'python', 'qboson_ising_worker', 'worker.py')
@@ -25,6 +26,20 @@ function optionalString(value) {
   if (value === undefined || value === null) return undefined
   const text = String(value).trim()
   return text.length > 0 ? text : undefined
+}
+
+async function waitForPreparation(promise, signal) {
+  if (!signal) return promise
+  signal.throwIfAborted()
+  let onAbort
+  try {
+    return await Promise.race([promise, new Promise((_resolve, reject) => {
+      onAbort = () => reject(signal.reason)
+      signal.addEventListener('abort', onAbort, { once: true })
+    })])
+  } finally {
+    signal.removeEventListener('abort', onAbort)
+  }
 }
 
 /** Kaiwu SDK provider for ctx.isingSolver. */
@@ -65,29 +80,31 @@ export default class KaiwuIsingSolverProvider extends IsingSolverService {
     }
 
     this.runtime = new ManagedKaiwuRuntime(ctx, config)
-    this.client = undefined
-    this.clientPython = undefined
+    this.clients = new Set()
     this.activeSolves = 0
     this.authorizationInProgress = false
+    this.preparation = undefined
     this.workerPath = optionalString(config.workerPath ?? process.env.QBOSON_ISING_WORKER_PATH) ?? DEFAULT_WORKER_PATH
     this.cwd = optionalString(config.cwd) ?? process.cwd()
     this.graceMs = graceMs
 
-    ctx.effect(() => () => this.client?.dispose())
+    ctx.effect(() => () => {
+      this.preparation?.controller.abort(new IsingSolverError('PROVIDER_DISPOSED', 'Kaiwu solver provider disposed'))
+      return Promise.all([...this.clients].map((client) => client.dispose()))
+    })
   }
 
   async workerClient(signal) {
-    const python = await this.runtime.resolvePython(signal)
-    if (this.client && this.clientPython === python) return this.client
-    if (this.client) await this.client.dispose()
-    this.clientPython = python
-    this.client = new KaiwuWorkerClient(this.ctx, {
+    const { python_executable: python } = await this.prepareRuntime(signal)
+    signal?.throwIfAborted()
+    const client = new KaiwuWorkerClient(this.ctx, {
       pythonExecutable: python,
       workerPath: this.workerPath,
       cwd: this.cwd,
       graceMs: this.graceMs,
     })
-    return this.client
+    this.clients.add(client)
+    return client
   }
 
   async checkRuntime(signal) {
@@ -116,7 +133,26 @@ export default class KaiwuIsingSolverProvider extends IsingSolverService {
   }
 
   async prepareRuntime(signal) {
+    signal?.throwIfAborted()
+    if (!this.preparation) {
+      const preparation = { controller: new AbortController(), waiters: 0 }
+      this.preparation = preparation
+      preparation.promise = this.prepareRuntimeOnce(preparation.controller.signal).finally(() => {
+        this.preparation = undefined
+      })
+    }
+    const preparation = this.preparation
+    preparation.waiters++
+    try {
+      return await waitForPreparation(preparation.promise, signal)
+    } finally {
+      if (--preparation.waiters === 0 && this.preparation === preparation) preparation.controller.abort()
+    }
+  }
+
+  async prepareRuntimeOnce(signal) {
     const status = await this.checkRuntime(signal)
+    signal.throwIfAborted()
     if (status.environment_status === 'ready' && status.license_status === 'valid') {
       const { python_executable, python_version, kaiwu_version, runtime_dir } = status
       return { python_executable, python_version, kaiwu_version, runtime_dir }
@@ -125,7 +161,7 @@ export default class KaiwuIsingSolverProvider extends IsingSolverService {
   }
 
   async configureLicense(signal, { prepare = false } = {}) {
-    if (this.activeSolves || this.authorizationInProgress) {
+    if (this.activeSolves || this.authorizationInProgress || (this.preparation && !prepare)) {
       throw new IsingSolverError('KAIWU_RUNTIME_BUSY', '当前有求解或授权操作正在进行，请完成后重试。')
     }
     this.authorizationInProgress = true
@@ -139,9 +175,6 @@ export default class KaiwuIsingSolverProvider extends IsingSolverService {
         ...JSON.parse(stdout),
         runtime_dir: this.runtime.root,
       }
-      await this.client?.dispose()
-      this.client = undefined
-      this.clientPython = undefined
       return info
     } finally {
       this.authorizationInProgress = false
@@ -150,21 +183,36 @@ export default class KaiwuIsingSolverProvider extends IsingSolverService {
 
   async solve(request, signal) {
     const dimension = validateIsingMatrix(request?.isingMatrix)
-    if (this.authorizationInProgress) {
+    if (this.authorizationInProgress && !this.preparation) {
       throw new IsingSolverError('KAIWU_RUNTIME_BUSY', '正在配置 Kaiwu 环境或授权，请完成后重试。')
     }
-    this.activeSolves++
+    let client
+    let taskName
     try {
-      const client = await this.workerClient(signal)
+      client = await this.workerClient(signal)
+      this.activeSolves++
+      taskName = `${this.baseEnv.KAIWU_TASK_NAME_PREFIX}_${randomUUID().replaceAll('-', '').slice(0, 12)}`
       const raw = await client.request(
-        { op: 'solve', ising_matrix: request.isingMatrix },
+        { op: 'solve', ising_matrix: request.isingMatrix, task_name: taskName },
         signal,
         this.timeoutMs,
         this.baseEnv,
       )
       return validateAndNormalizeResult(raw, dimension)
+    } catch (error) {
+      if (!taskName) throw error
+      throw new IsingSolverError(
+        signal?.aborted ? 'ABORTED' : error instanceof IsingSolverError ? error.code : 'SOLVER_ERROR',
+        `${errorMessage(error)}\n任务名：${taskName}。如已提交云端，请在平台核对任务状态后再决定是否重试。`,
+        { ...error?.details, task_name: taskName },
+      )
     } finally {
-      this.activeSolves--
+      try {
+        await client?.dispose()
+      } finally {
+        this.clients.delete(client)
+        if (client) this.activeSolves--
+      }
     }
   }
 }

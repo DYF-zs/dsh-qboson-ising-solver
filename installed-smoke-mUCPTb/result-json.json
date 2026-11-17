@@ -1,0 +1,15 @@
+{
+  "dimension": 2,
+  "solutions": [
+    {
+      "spins": [
+        1,
+        -1
+      ],
+      "hamiltonian": -2
+    }
+  ],
+  "solver_time_us": 1,
+  "task_name": "fixture_not_hardware",
+  "matrix_sha256": "659a5a9b2eb6a368ae844c124658f3d248a95074fb33f280f7423a877988dd69"
+}

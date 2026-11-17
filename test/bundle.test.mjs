@@ -30,13 +30,17 @@ test('installation bundle mounts three plugins with independent Skill registrati
   for (const name of ['solve_ising', 'solve_ising_file', 'prepare_kaiwu_runtime', 'configure_kaiwu_license', 'check_kaiwu_runtime']) {
     assert.ok(ctx.tools.get(name))
   }
-  assert.ok((await ctx.skills.get('kaiwu-optimization')).content)
+  for (const name of ['kaiwu-coding-skill', 'kpp-coding-skill']) {
+    assert.ok((await ctx.skills.get(name)).content)
+  }
   await fibers[0].dispose()
   await new Promise(setImmediate)
   for (const name of ['solve_ising', 'solve_ising_file', 'prepare_kaiwu_runtime', 'configure_kaiwu_license', 'check_kaiwu_runtime']) {
     assert.equal(ctx.tools.get(name), undefined)
   }
-  assert.ok((await ctx.skills.get('kaiwu-optimization')).content)
+  for (const name of ['kaiwu-coding-skill', 'kpp-coding-skill']) {
+    assert.ok((await ctx.skills.get(name)).content)
+  }
   await fibers[2].dispose()
   assert.deepEqual(await ctx.skills.list(), [])
 })
