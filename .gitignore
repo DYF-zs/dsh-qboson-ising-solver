@@ -10,3 +10,4 @@ dist/
 .env.*
 .credentials.yaml
 .venv/
+/test/

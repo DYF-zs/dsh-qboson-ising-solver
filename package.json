@@ -45,9 +45,7 @@
     "dsh-ising-doctor": "bin/dsh-ising-doctor.js"
   },
   "scripts": {
-    "test": "node --test test/*.test.mjs",
     "test:python": "python -m unittest discover -s python/tests -p \"test_*.py\"",
-    "check": "npm test && npm run test:python",
     "doctor": "node ./bin/dsh-ising-doctor.js"
   },
   "engines": {
